@@ -6,16 +6,18 @@ import AddSong from "./components/AddSong";
 import Player from "./components/Player";
 import SearchBar from "./components/SearchBar";
 
-import { loadSongs, clearPlaylist } from "./redux/musicSlice";
+import {
+  loadSongs,
+  clearPlaylist,
+  addSong
+} from "./redux/musicSlice";
 
 function App() {
   const dispatch = useDispatch();
 
   const songs = useSelector((state) => state.music.songs);
 
-  const [searchTerm, setSearchTerm] = useState("");
   const [showLikedOnly, setShowLikedOnly] = useState(false);
-
   const [loaded, setLoaded] = useState(false);
 
   // Load songs from localStorage
@@ -36,59 +38,92 @@ function App() {
     }
   }, [songs, loaded]);
 
-  // Search + filter
-  const filteredSongs = songs.filter((song) => {
-    const matchesSearch =
-      song.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      song.artist.toLowerCase().includes(searchTerm.toLowerCase());
+  // Add song from iTunes API to Redux playlist
+  const handleAddSong = (song) => {
+    const newSong = {
+      id: song.trackId,
+      title: song.trackName,
+      artist: song.artistName,
+      liked: false,
+      previewUrl: song.previewUrl
+    };
 
-    const matchesLiked = !showLikedOnly || song.liked;
-
-    return matchesSearch && matchesLiked;
-  });
+    dispatch(addSong(newSong));
+  };
 
   // Statistics
   const totalSongs = songs.length;
 
-  const likedSongs = songs.filter((song) => song.liked).length;
+  const likedSongs = songs.filter(
+    (song) => song.liked
+  ).length;
 
-  const artists = new Set(songs.map((song) => song.artist)).size;
+  const artists = new Set(
+    songs.map((song) => song.artist)
+  ).size;
+
+  // Only filter our saved playlist by liked status
+  const displayedSongs = showLikedOnly
+    ? songs.filter((song) => song.liked)
+    : songs;
 
   return (
-    <div className="min-h-screen bg-zinc-950  text-white">
+    <div className="min-h-screen bg-zinc-950 text-white">
       <div className="max-w-4xl mx-auto px-6 py-10">
+
         {/* Header */}
         <header className="text-center mb-10">
-          <h1 className="text-4xl font-bold mb-2">🎵 My Music Playlist</h1>
+          <h1 className="text-4xl font-bold mb-2">
+            🎵 My Music Playlist
+          </h1>
 
-          <p className="text-zinc-400">Manage your favorite songs</p>
+          <p className="text-zinc-400">
+            Manage your favorite songs
+          </p>
         </header>
 
         {/* Statistics */}
         <div className="grid grid-cols-3 gap-4 mb-8">
+
           <div className="bg-zinc-900 rounded-xl p-5 text-center">
             <p className="text-2xl">🎵</p>
-            <p className="text-zinc-400 mt-2">Total Songs</p>
-            <p className="text-2xl font-bold mt-1">{totalSongs}</p>
+            <p className="text-zinc-400 mt-2">
+              Total Songs
+            </p>
+            <p className="text-2xl font-bold mt-1">
+              {totalSongs}
+            </p>
           </div>
 
           <div className="bg-zinc-900 rounded-xl p-5 text-center">
             <p className="text-2xl">❤️</p>
-            <p className="text-zinc-400 mt-2">Liked Songs</p>
-            <p className="text-2xl font-bold mt-1">{likedSongs}</p>
+            <p className="text-zinc-400 mt-2">
+              Liked Songs
+            </p>
+            <p className="text-2xl font-bold mt-1">
+              {likedSongs}
+            </p>
           </div>
 
           <div className="bg-zinc-900 rounded-xl p-5 text-center">
             <p className="text-2xl">🎤</p>
-            <p className="text-zinc-400 mt-2">Artists</p>
-            <p className="text-2xl font-bold mt-1">{artists}</p>
+            <p className="text-zinc-400 mt-2">
+              Artists
+            </p>
+            <p className="text-2xl font-bold mt-1">
+              {artists}
+            </p>
           </div>
+
         </div>
 
-        {/* Search + Filter */}
+        {/* API Search + Filter */}
         <div className="flex gap-3 mb-6">
+
           <div className="flex-1">
-            <SearchBar onSearch={setSearchTerm} />
+            <SearchBar
+              onAddSong={handleAddSong}
+            />
           </div>
 
           <button
@@ -112,22 +147,32 @@ function App() {
           >
             ❤️ Liked
           </button>
+
         </div>
 
-        {/* Add Song */}
+        {/* Manual Add Song */}
         <div className="mb-8">
           <AddSong />
         </div>
 
-        {/* Songs */}
+        {/* Playlist */}
         <div className="space-y-3">
-          {filteredSongs.length > 0 ? (
-            filteredSongs.map((song) => <SongCard key={song.id} song={song} />)
+
+          {displayedSongs.length > 0 ? (
+            displayedSongs.map((song) => (
+              <SongCard
+                key={song.id}
+                song={song}
+              />
+            ))
           ) : (
             <div className="text-center py-10 text-zinc-500">
-              No songs found.
+              {showLikedOnly
+                ? "No liked songs yet."
+                : "Your playlist is empty."}
             </div>
           )}
+
         </div>
 
         {/* Clear Playlist */}
@@ -142,6 +187,7 @@ function App() {
         <div className="mt-10">
           <Player />
         </div>
+
       </div>
     </div>
   );

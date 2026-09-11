@@ -7,18 +7,27 @@ const initialState = {
       title: "Blinding Lights",
       artist: "The Weeknd",
       liked: false,
+      previewUrl: "...",
     },
     {
       id: 2,
       title: "Shape of You",
       artist: "Ed Sheeran",
       liked: false,
+      previewUrl: "...",
     },
-    { id: 3, title: "Dracula", artist: "Tame Impala", liked: false },
+    {
+      id: 3,
+      title: "Dracula",
+      artist: "Tame Impala",
+      liked: false,
+      previewUrl: "...",
+    },
   ],
   currentSong: null,
   isPlaying: false,
 };
+
 
 const musicSlice = createSlice({
   name: "music",
@@ -64,4 +73,6 @@ export const {
   clearPlaylist,
   loadSongs,
 } = musicSlice.actions;
+
+
 export default musicSlice.reducer;
