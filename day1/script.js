@@ -2,6 +2,8 @@ let display = document.getElementById("display");
 
 let buttons = document.querySelectorAll("button");
 
+let history = document.getElementById("history");
+
 function tokenize(expression) {
   let tokens = [];
   let currentNumber = "";
@@ -84,6 +86,12 @@ buttons.forEach(function (button) {
       let answer = calculateTokens(tokens);
 
       display.value = answer;
+
+      history.innerHTML += `
+    <div class="history-item">
+        <div>${expression}</div>
+    </div>
+`;
     } else if (button.innerText === "DEL") {
       display.value = display.value.slice(0, -1);
     } else if (button.innerText === "%") {
