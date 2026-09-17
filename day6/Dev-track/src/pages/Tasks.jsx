@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { memo, useCallback, useMemo, useState } from "react";
 import {
   Plus,
   Search,
@@ -121,8 +121,9 @@ const columns = [
   },
 ];
 
-function TaskCard({ task, onDelete, onMove }) {
-    console.log("🟡 TaskCard rendered:", task.title);
+const TaskCard = memo(function TaskCard({ task, onDelete, onMove }) {
+  console.log("🟡 TaskCard rendered:", task.title);
+
   const priorityStyles = {
     High: "bg-rose-50 text-rose-600",
     Medium: "bg-amber-50 text-amber-600",
@@ -205,7 +206,7 @@ function TaskCard({ task, onDelete, onMove }) {
       </div>
     </article>
   );
-}
+});
 
 function NewTaskModal({ onClose, onCreate }) {
   const [title, setTitle] = useState("");
@@ -378,7 +379,6 @@ function EmptyColumn({ status, onCreate }) {
 }
 
 function Tasks() {
-
   console.log("🔄 Tasks rendered");
   const [tasks, setTasks] = useState(initialTasks);
 
@@ -411,11 +411,11 @@ function Tasks() {
     });
   }, [tasks, search, priorityFilter, projectFilter]);
 
-  const handleDelete = (id) => {
+  const handleDelete = useCallback((id) => {
     setTasks((currentTasks) => currentTasks.filter((task) => task.id !== id));
-  };
+  }, []);
 
-  const handleMove = (id, newStatus) => {
+  const handleMove = useCallback((id, newStatus) => {
     setTasks((currentTasks) =>
       currentTasks.map((task) =>
         task.id === id
@@ -426,7 +426,7 @@ function Tasks() {
           : task,
       ),
     );
-  };
+  }, []);
 
   const handleCreate = (newTask) => {
     const task = {
