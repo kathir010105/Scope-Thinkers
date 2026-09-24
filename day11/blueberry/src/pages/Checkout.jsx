@@ -18,6 +18,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import BlueberryNav from "../components/layout/BlueberryNav";
 import useCartStore from "../store/cartStore";
 import { useAuth } from "../context/AuthContext";
+import { supabase } from "../lib/supabase";
 
 function Checkout() {
   const navigate = useNavigate();
@@ -25,12 +26,13 @@ function Checkout() {
 
   const { user } = useAuth();
 
-  const { items, restaurantName, getSubtotal } = useCartStore();
+  const { items, restaurantId, restaurantName, emptyCart, getSubtotal } =
+    useCartStore();
 
   const [loading, setLoading] = useState(false);
   const [verifying, setVerifying] = useState(false);
-
   const [paymentStatus, setPaymentStatus] = useState(null);
+  const [orderSummary, setOrderSummary] = useState(null);
 
   const [formData, setFormData] = useState({
     name: "",
@@ -41,9 +43,9 @@ function Checkout() {
     pincode: "",
   });
 
-  // --------------------------------------------------
+  // ==================================================
   // CALCULATIONS
-  // --------------------------------------------------
+  // ==================================================
 
   const subtotal = getSubtotal();
 
@@ -53,25 +55,39 @@ function Checkout() {
 
   const total = subtotal + deliveryFee + tax;
 
-  // --------------------------------------------------
+  // ==================================================
   // LOAD USER DETAILS
-  // --------------------------------------------------
+  // ==================================================
 
   useEffect(() => {
     if (!user) return;
 
     setFormData((previous) => ({
       ...previous,
-
       email: user.email || previous.email,
-
       name: user.user_metadata?.full_name || previous.name,
     }));
   }, [user]);
 
-  // --------------------------------------------------
-  // CHECK IF RETURNING FROM CASHFREE
-  // --------------------------------------------------
+  // ==================================================
+  // LOAD LAST ORDER SUMMARY
+  // ==================================================
+
+  useEffect(() => {
+    const savedOrder = sessionStorage.getItem("blueberry_last_order");
+
+    if (!savedOrder) return;
+
+    try {
+      setOrderSummary(JSON.parse(savedOrder));
+    } catch (error) {
+      console.error("Could not load saved order:", error);
+    }
+  }, []);
+
+  // ==================================================
+  // CHECK CASHFREE RETURN
+  // ==================================================
 
   useEffect(() => {
     const orderId = searchParams.get("order_id");
@@ -81,9 +97,9 @@ function Checkout() {
     verifyPayment(orderId);
   }, [searchParams]);
 
-  // --------------------------------------------------
+  // ==================================================
   // INPUT HANDLER
-  // --------------------------------------------------
+  // ==================================================
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -94,14 +110,373 @@ function Checkout() {
     }));
   };
 
-  // --------------------------------------------------
-  // VERIFY PAYMENT
-  // --------------------------------------------------
+  // ==================================================
+  // CREATE BLUEBERRY ORDER
+  // ==================================================
+
+  const createBlueberryOrder = async (cashfreeOrderId) => {
+    try {
+      if (!user?.id) {
+        throw new Error("You must be logged in to place an order.");
+      }
+
+      // ------------------------------------------------
+      // CHECK WHETHER THIS CASHFREE ORDER WAS ALREADY
+      // PROCESSED
+      // ------------------------------------------------
+
+      const { data: existingPayment, error: existingPaymentError } =
+        await supabase
+          .from("payments")
+          .select("order_id")
+          .eq("gateway", "cashfree")
+          .eq("gateway_payment_id", cashfreeOrderId)
+          .maybeSingle();
+
+      if (existingPaymentError) {
+        throw existingPaymentError;
+      }
+
+      // Already processed
+      if (existingPayment?.order_id) {
+        const { data: existingOrder, error: existingOrderError } =
+          await supabase
+            .from("orders")
+            .select("*")
+            .eq("id", existingPayment.order_id)
+            .single();
+
+        if (existingOrderError) {
+          throw existingOrderError;
+        }
+
+        return existingOrder;
+      }
+
+      // ------------------------------------------------
+      // GET SAVED CHECKOUT DATA
+      // ------------------------------------------------
+
+      const savedOrder = sessionStorage.getItem("blueberry_pending_order");
+
+      if (!savedOrder) {
+        throw new Error("Order information was lost. Please contact support.");
+      }
+
+      const pendingOrder = JSON.parse(savedOrder);
+
+      if (!pendingOrder.items?.length) {
+        throw new Error("No items were found for this order.");
+      }
+
+      if (!pendingOrder.restaurantId) {
+        throw new Error("Restaurant information is missing.");
+      }
+
+      // ------------------------------------------------
+      // CREATE ORDER
+      // ------------------------------------------------
+
+      const { data: order, error: orderError } = await supabase
+        .from("orders")
+        .insert({
+        
+          user_id: user.id,
+
+          restaurant_id: pendingOrder.restaurantId,
+
+          delivery_name: pendingOrder.name,
+
+          delivery_phone: pendingOrder.phone,
+
+          delivery_address: `${pendingOrder.address}, ${pendingOrder.city} - ${pendingOrder.pincode}`,
+
+          delivery_instructions: null,
+
+          subtotal: Number(pendingOrder.subtotal),
+
+          delivery_fee: Number(pendingOrder.deliveryFee),
+
+          discount: 0,
+
+          tax: Number(pendingOrder.tax),
+
+          total_amount: Number(pendingOrder.total),
+
+          status: "placed",
+        })
+        .select()
+        .single();
+
+      if (orderError) {
+        throw orderError;
+      }
+
+      console.log("Blueberry order created:", order);
+
+      // ------------------------------------------------
+      // CREATE ORDER ITEMS
+      // ------------------------------------------------
+
+      const orderItems = pendingOrder.items.map((item) => ({
+        order_id: order.id,
+
+        menu_item_id: item.menu_item_id,
+
+        item_name: item.menu_items?.name || item.name || "Food item",
+
+        quantity: Number(item.quantity),
+
+        unit_price: Number(item.unit_price),
+
+        special_instructions: item.special_instructions || null,
+      }));
+
+      const { error: orderItemsError } = await supabase
+        .from("order_items")
+        .insert(orderItems);
+
+      if (orderItemsError) {
+        throw orderItemsError;
+      }
+
+      console.log("Order items created:", orderItems);
+
+      // ------------------------------------------------
+      // CREATE PAYMENT RECORD
+      // ------------------------------------------------
+
+      const { error: paymentError } = await supabase.from("payments").insert({
+        order_id: order.id,
+
+        method: "upi",
+
+        status: "success",
+
+        gateway: "cashfree",
+
+        gateway_payment_id: cashfreeOrderId,
+
+        amount: Number(pendingOrder.total),
+
+        paid_at: new Date().toISOString(),
+      });
+
+      if (paymentError) {
+        throw paymentError;
+      }
+
+      console.log("Payment record created.");
+
+      // ------------------------------------------------
+      // FIND AVAILABLE DELIVERY PARTNER
+      // ------------------------------------------------
+
+      const { data: partner, error: partnerError } = await supabase
+        .from("delivery_partners")
+        .select("*")
+        .eq("is_available", true)
+        .eq("is_active", true)
+        .not("current_latitude", "is", null)
+        .not("current_longitude", "is", null)
+        .limit(1)
+        .maybeSingle();
+
+      if (partnerError) {
+        console.error("Delivery partner lookup failed:", partnerError);
+      }
+
+      // ------------------------------------------------
+      // DELIVERY
+      // ------------------------------------------------
+
+      let delivery = null;
+
+      if (partner) {
+        console.log("Assigning delivery partner:", partner.name);
+
+        // ----------------------------------------------
+        // CREATE DELIVERY
+        // ----------------------------------------------
+
+        const { data: createdDelivery, error: deliveryError } = await supabase
+          .from("deliveries")
+          .insert({
+            order_id: order.id,
+
+            delivery_partner_id: partner.id,
+
+            assigned_at: new Date().toISOString(),
+          })
+          .select()
+          .single();
+
+        if (deliveryError) {
+          throw deliveryError;
+        }
+
+        delivery = createdDelivery;
+
+        console.log("Delivery created:", delivery);
+
+        // ----------------------------------------------
+        // CREATE INITIAL TRACKING LOCATION
+        // ----------------------------------------------
+
+        const { error: trackingError } = await supabase
+          .from("delivery_tracking")
+          .insert({
+            delivery_id: delivery.id,
+
+            latitude: partner.current_latitude,
+
+            longitude: partner.current_longitude,
+
+            status: "assigned",
+          });
+
+        if (trackingError) {
+          throw trackingError;
+        }
+
+        console.log("Initial delivery tracking created.");
+
+        // ----------------------------------------------
+        // MARK PARTNER AS BUSY
+        // ----------------------------------------------
+
+        const { error: partnerUpdateError } = await supabase
+          .from("delivery_partners")
+          .update({
+            is_available: false,
+
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", partner.id);
+
+        if (partnerUpdateError) {
+          console.warn(
+            "Could not update partner availability:",
+            partnerUpdateError,
+          );
+        }
+
+        console.log(`${partner.name} assigned successfully.`);
+      } else {
+        console.warn(
+          "No delivery partner available. Order will remain unassigned.",
+        );
+      }
+
+      // ------------------------------------------------
+      // SAVE LAST ORDER
+      // ------------------------------------------------
+
+      const lastOrder = {
+        orderId: order.id,
+
+        orderNumber: order.order_number,
+
+        restaurantName: pendingOrder.restaurantName || "Restaurant",
+
+        total: Number(pendingOrder.total),
+
+        deliveryId: delivery?.id || null,
+
+        deliveryPartnerId: partner?.id || null,
+
+        deliveryPartnerName: partner?.name || null,
+
+        deliveryPartnerPhone: partner?.phone || null,
+
+        vehicleType: partner?.vehicle_type || null,
+
+        vehicleNumber: partner?.vehicle_number || null,
+      };
+
+      sessionStorage.setItem("blueberry_last_order", JSON.stringify(lastOrder));
+
+      setOrderSummary(lastOrder);
+
+      // ------------------------------------------------
+      // EMPTY CART
+      // ------------------------------------------------
+
+      await emptyCart();
+
+      // ------------------------------------------------
+      // REMOVE PENDING ORDER
+      // ------------------------------------------------
+
+      sessionStorage.removeItem("blueberry_pending_order");
+
+      console.log("================================");
+
+      console.log("BLUEBERRY ORDER COMPLETED");
+
+      console.log("Order:", order.id);
+
+      console.log("Order number:", order.order_number);
+
+      console.log("Delivery partner:", partner?.name || "Not assigned");
+
+      console.log("================================");
+
+      return order;
+    } catch (error) {
+      console.error("Blueberry order creation failed:", error);
+
+      throw error;
+    }
+  };
+
+  // ==================================================
+  // VERIFY CASHFREE PAYMENT
+  // ==================================================
 
   const verifyPayment = async (orderId) => {
+    const verificationKey = `blueberry_payment_${orderId}`;
+
+    // ------------------------------------------------
+    // PREVENT DUPLICATE PROCESSING
+    // ------------------------------------------------
+
+    const existingVerification = sessionStorage.getItem(verificationKey);
+
+    if (existingVerification === "processing") {
+      return;
+    }
+
+    // ------------------------------------------------
+    // ALREADY COMPLETED
+    // ------------------------------------------------
+
+    if (existingVerification === "completed") {
+      setPaymentStatus("PAID");
+
+      const savedOrder = sessionStorage.getItem("blueberry_last_order");
+
+      if (savedOrder) {
+        try {
+          setOrderSummary(JSON.parse(savedOrder));
+        } catch (error) {
+          console.error("Could not load saved order:", error);
+        }
+      }
+
+      return;
+    }
+
+    sessionStorage.setItem(verificationKey, "processing");
+
     try {
       setVerifying(true);
+
       setPaymentStatus(null);
+
+      // ------------------------------------------------
+      // VERIFY PAYMENT WITH BACKEND
+      // ------------------------------------------------
 
       const response = await fetch(
         `http://localhost:5000/api/payment/verify/${orderId}`,
@@ -112,17 +487,65 @@ function Checkout() {
       console.log("Payment verification:", data);
 
       if (!response.ok || !data.success) {
+        sessionStorage.removeItem(verificationKey);
+
         setPaymentStatus("FAILED");
+
         return;
       }
 
+      // ------------------------------------------------
+      // PAYMENT SUCCESS
+      // ------------------------------------------------
+
       if (data.order.status === "PAID") {
-        setPaymentStatus("PAID");
+        try {
+          const order = await createBlueberryOrder(orderId);
+
+          const savedOrder = sessionStorage.getItem("blueberry_last_order");
+
+          if (savedOrder) {
+            try {
+              setOrderSummary(JSON.parse(savedOrder));
+            } catch (error) {
+              console.error("Could not parse saved order:", error);
+            }
+          } else if (order) {
+            setOrderSummary({
+              orderId: order.id,
+
+              orderNumber: order.order_number,
+
+              restaurantName: restaurantName || "Restaurant",
+
+              total: Number(order.total_amount || total),
+            });
+          }
+
+          sessionStorage.setItem(verificationKey, "completed");
+
+          setPaymentStatus("PAID");
+        } catch (orderError) {
+          console.error("Order creation failed:", orderError);
+
+          sessionStorage.removeItem(verificationKey);
+
+          setPaymentStatus("FAILED");
+
+          alert(
+            orderError.message ||
+              "Payment succeeded, but we could not create your Blueberry order.",
+          );
+        }
       } else {
+        sessionStorage.removeItem(verificationKey);
+
         setPaymentStatus(data.order.status);
       }
     } catch (error) {
       console.error("Payment verification error:", error);
+
+      sessionStorage.removeItem(verificationKey);
 
       setPaymentStatus("FAILED");
     } finally {
@@ -130,50 +553,130 @@ function Checkout() {
     }
   };
 
-  // --------------------------------------------------
+  // ==================================================
   // START CASHFREE PAYMENT
-  // --------------------------------------------------
+  // ==================================================
 
   const handlePayment = async () => {
-    // Validate form
+    // ------------------------------------------------
+    // LOGIN CHECK
+    // ------------------------------------------------
+
+    if (!user?.id) {
+      alert("Please login before placing your order.");
+
+      navigate("/login");
+
+      return;
+    }
+
+    // ------------------------------------------------
+    // RESTAURANT CHECK
+    // ------------------------------------------------
+
+    if (!restaurantId) {
+      alert("Restaurant information is missing from your cart.");
+
+      navigate("/cart");
+
+      return;
+    }
+
+    // ------------------------------------------------
+    // VALIDATION
+    // ------------------------------------------------
+
     if (!formData.name.trim()) {
       alert("Please enter your name.");
+
       return;
     }
 
     if (!formData.email.trim()) {
       alert("Please enter your email.");
+
       return;
     }
 
     if (!formData.phone.trim()) {
       alert("Please enter your phone number.");
+
       return;
     }
 
     if (!/^[6-9]\d{9}$/.test(formData.phone)) {
       alert("Please enter a valid 10-digit Indian phone number.");
+
       return;
     }
 
     if (!formData.address.trim()) {
       alert("Please enter your delivery address.");
+
       return;
     }
 
     if (!formData.pincode.trim()) {
       alert("Please enter your pincode.");
+
+      return;
+    }
+
+    if (!/^\d{6}$/.test(formData.pincode)) {
+      alert("Please enter a valid 6-digit pincode.");
+
       return;
     }
 
     if (items.length === 0) {
       alert("Your cart is empty.");
+
       navigate("/cart");
+
       return;
     }
 
     try {
       setLoading(true);
+
+      // ------------------------------------------------
+      // SAVE PENDING ORDER
+      // ------------------------------------------------
+
+      const pendingOrder = {
+        restaurantId,
+
+        restaurantName,
+
+        name: formData.name,
+
+        email: formData.email,
+
+        phone: formData.phone,
+
+        address: formData.address,
+
+        city: formData.city,
+
+        pincode: formData.pincode,
+
+        subtotal,
+
+        deliveryFee,
+
+        tax,
+
+        total,
+
+        items,
+      };
+
+      sessionStorage.setItem(
+        "blueberry_pending_order",
+        JSON.stringify(pendingOrder),
+      );
+
+      console.log("Pending Blueberry order saved.");
 
       // ------------------------------------------------
       // CREATE CASHFREE ORDER
@@ -202,7 +705,7 @@ function Checkout() {
 
       const data = await response.json();
 
-      console.log("Create order response:", data);
+      console.log("Create Cashfree order response:", data);
 
       if (!response.ok || !data.success) {
         throw new Error(data.message || "Unable to create payment order");
@@ -215,7 +718,7 @@ function Checkout() {
       }
 
       // ------------------------------------------------
-      // INITIALIZE CASHFREE
+      // CASHFREE SDK
       // ------------------------------------------------
 
       if (!window.Cashfree) {
@@ -229,7 +732,7 @@ function Checkout() {
       });
 
       // ------------------------------------------------
-      // OPEN CASHFREE CHECKOUT
+      // OPEN CASHFREE
       // ------------------------------------------------
 
       cashfree.checkout({
@@ -239,14 +742,16 @@ function Checkout() {
       console.error("Payment error:", error);
 
       alert(error.message || "Something went wrong while starting payment.");
+
+      sessionStorage.removeItem("blueberry_pending_order");
     } finally {
       setLoading(false);
     }
   };
 
-  // --------------------------------------------------
+  // ==================================================
   // EMPTY CART
-  // --------------------------------------------------
+  // ==================================================
 
   if (items.length === 0 && !searchParams.get("order_id")) {
     return (
@@ -279,9 +784,9 @@ function Checkout() {
     );
   }
 
-  // --------------------------------------------------
+  // ==================================================
   // VERIFYING PAYMENT
-  // --------------------------------------------------
+  // ==================================================
 
   if (verifying) {
     return (
@@ -307,11 +812,16 @@ function Checkout() {
     );
   }
 
-  // --------------------------------------------------
+  // ==================================================
   // PAYMENT SUCCESS
-  // --------------------------------------------------
+  // ==================================================
 
   if (paymentStatus === "PAID") {
+    const displayRestaurant =
+      orderSummary?.restaurantName || restaurantName || "Restaurant";
+
+    const displayTotal = orderSummary?.total ?? total;
+
     return (
       <div className="min-h-screen bg-gray-50">
         <BlueberryNav />
@@ -328,25 +838,58 @@ function Checkout() {
 
             <p className="mt-3 text-sm leading-6 text-gray-500">
               Your payment has been successfully verified. Your Blueberry order
-              is being prepared.
+              has been placed.
             </p>
 
             <div className="mt-8 rounded-2xl bg-gray-50 p-5 text-left">
-              <div className="flex justify-between">
+              <div className="flex justify-between gap-4">
                 <span className="text-sm text-gray-500">Restaurant</span>
 
-                <span className="text-sm font-semibold text-gray-900">
-                  {restaurantName || "Restaurant"}
+                <span className="text-right text-sm font-semibold text-gray-900">
+                  {displayRestaurant}
                 </span>
               </div>
+
+              {orderSummary?.orderNumber && (
+                <div className="mt-3 flex justify-between">
+                  <span className="text-sm text-gray-500">Order number</span>
+
+                  <span className="text-sm font-semibold text-gray-900">
+                    #{orderSummary.orderNumber}
+                  </span>
+                </div>
+              )}
 
               <div className="mt-3 flex justify-between">
                 <span className="text-sm text-gray-500">Amount paid</span>
 
                 <span className="text-sm font-bold text-blue-600">
-                  ₹{total.toFixed(0)}
+                  ₹{Number(displayTotal).toFixed(0)}
                 </span>
               </div>
+
+              {orderSummary?.deliveryPartnerName && (
+                <div className="mt-3 flex justify-between gap-4">
+                  <span className="text-sm text-gray-500">
+                    Delivery partner
+                  </span>
+
+                  <span className="text-right text-sm font-semibold text-gray-900">
+                    {orderSummary.deliveryPartnerName}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 rounded-2xl bg-blue-50 p-4 text-left ring-1 ring-blue-100">
+              <p className="text-sm font-semibold text-blue-900">
+                Your order is being prepared.
+              </p>
+
+              <p className="mt-1 text-xs leading-5 text-blue-700">
+                You can track your delivery and view your delivery partner from
+                My Orders.
+              </p>
             </div>
 
             <button
@@ -361,9 +904,9 @@ function Checkout() {
     );
   }
 
-  // --------------------------------------------------
+  // ==================================================
   // PAYMENT FAILED
-  // --------------------------------------------------
+  // ==================================================
 
   if (paymentStatus === "FAILED" || paymentStatus === "EXPIRED") {
     return (
@@ -400,9 +943,9 @@ function Checkout() {
     );
   }
 
-  // --------------------------------------------------
+  // ==================================================
   // CHECKOUT PAGE
-  // --------------------------------------------------
+  // ==================================================
 
   return (
     <div className="min-h-screen bg-gray-50 pb-16">
@@ -439,7 +982,7 @@ function Checkout() {
           {/* LEFT */}
 
           <section className="space-y-6">
-            {/* CUSTOMER DETAILS */}
+            {/* CONTACT DETAILS */}
 
             <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-gray-100">
               <div className="flex items-center gap-3">
