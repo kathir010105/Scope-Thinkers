@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   Navigation,
 } from "lucide-react";
+import DeliverySimulator from "../components/track/DeliverySimulator";
 
 import BlueberryNav from "../components/layout/BlueberryNav";
 import LiveMap from "../components/track/LiveMap";
@@ -354,6 +355,23 @@ function TrackOrder() {
                 />
               </div>
             </div>
+            {/* Delivery Simulation */}
+            {delivery && partner && (
+              <DeliverySimulator
+                delivery={delivery}
+                order={order}
+                partner={partner}
+                deliveryAddress={order.delivery_address}
+                onLocationUpdate={(location) => {
+                  setTracking((current) => ({
+                    ...current,
+                    latitude: location.latitude,
+                    longitude: location.longitude,
+                    recorded_at: new Date().toISOString(),
+                  }));
+                }}
+              />
+            )}
 
             {/* Delivery Address */}
             <div className="rounded-3xl bg-white p-5 shadow-sm">
