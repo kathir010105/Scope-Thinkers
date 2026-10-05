@@ -17,6 +17,7 @@ import {
   setMessages,
   clearMessages,
   addMessage,
+  insertMessage,
 } from "../redux/slices/messageSlice";
 
 import {
@@ -124,12 +125,12 @@ function ChatWindow() {
       }
 
       /*
-       * Add incoming message to Redux
+       * Add incoming message to Redux in correct timestamp order
        */
 
-      console.log("Adding incoming message:", data.message);
+      console.log("Inserting incoming message:", data.message);
 
-      dispatch(addMessage(data.message));
+      dispatch(insertMessage(data.message));
     });
 
     return () => {
@@ -165,7 +166,10 @@ function ChatWindow() {
 
         console.log("Messages loaded:", result);
 
-        dispatch(setMessages(result));
+        // Ensure messages are sorted by createdAt ascending (oldest first)
+        const sortedMessages = [...result].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+        dispatch(setMessages(sortedMessages));
       } catch (error) {
         console.error("Failed to load messages:", error);
       }
