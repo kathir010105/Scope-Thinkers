@@ -2,6 +2,7 @@ import express from "express";
 import http from "http";
 import cors from "cors";
 import { WebSocketServer } from "ws";
+import { upload } from "./upload.js";
 
 const app = express();
 
@@ -94,7 +95,12 @@ wss.on("connection", (ws, req) => {
       if (data.type === "message") {
         const { senderId, receiverId, chatId, message } = data;
 
-        console.log("Processing message:", { senderId, receiverId, chatId, messageId: message?.id });
+        console.log("Processing message:", {
+          senderId,
+          receiverId,
+          chatId,
+          messageId: message?.id,
+        });
 
         if (!receiverId) {
           console.log("Message rejected: receiverId missing");
@@ -108,7 +114,12 @@ wss.on("connection", (ws, req) => {
 
         const receiverSocket = clients.get(receiverId);
 
-        console.log("Receiver socket found:", !!receiverSocket, "readyState:", receiverSocket?.readyState);
+        console.log(
+          "Receiver socket found:",
+          !!receiverSocket,
+          "readyState:",
+          receiverSocket?.readyState,
+        );
 
         /*
          * Receiver online
@@ -139,7 +150,10 @@ wss.on("connection", (ws, req) => {
            * when chat history is loaded.
            */
 
-          console.log(`Receiver ${receiverId} is not connected. Connected users:`, [...clients.keys()]);
+          console.log(
+            `Receiver ${receiverId} is not connected. Connected users:`,
+            [...clients.keys()],
+          );
         }
 
         return;
@@ -214,8 +228,123 @@ app.get("/health", (req, res) => {
 
 const PORT = 5000;
 
+app.post("/api/files/upload", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        message: "No file uploaded",
+      });
+    }
+
+    const { uploadedBy, chatId } = req.body;
+
+    if (!uploadedBy || !chatId) {
+      return res.status(400).json({
+        message: "uploadedBy and chatId are required",
+      });
+    }
+
+    const [result] = await pool.execute(
+      `
+      INSERT INTO chat_files
+      (
+        file_name,
+        file_type,
+        file_size,
+        file_data,
+        uploaded_by,
+        chat_id
+      )
+      VALUES (?, ?, ?, ?, ?, ?)
+      `,
+      [
+        req.file.originalname,
+        req.file.mimetype,
+        req.file.size,
+        req.file.buffer,
+        uploadedBy,
+        chatId,
+      ],
+    );
+
+    console.log("File stored in MySQL:", {
+      id: result.insertId,
+      name: req.file.originalname,
+      type: req.file.mimetype,
+      size: req.file.size,
+    });
+
+    res.json({
+      success: true,
+      fileId: result.insertId,
+      fileName: req.file.originalname,
+      fileType: req.file.mimetype,
+      fileSize: req.file.size,
+    });
+  } catch (error) {
+    console.error("File upload error:", error);
+
+    res.status(500).json({
+      message: "Failed to upload file",
+    });
+  }
+});
+
+app.get("/api/files/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [rows] = await pool.execute(
+      `
+      SELECT
+        file_name,
+        file_type,
+        file_size,
+        file_data
+      FROM chat_files
+      WHERE id = ?
+      `,
+      [id],
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        message: "File not found",
+      });
+    }
+
+    const file = rows[0];
+
+    res.setHeader("Content-Type", file.file_type);
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${file.file_name}"`,
+    );
+
+    res.send(file.file_data);
+  } catch (error) {
+    console.error("File retrieval error:", error);
+
+    res.status(500).json({
+      message: "Failed to retrieve file",
+    });
+  }
+});
+
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
 
   console.log(`WebSocket running on ws://0.0.0.0:${PORT}`);
 });
+
+import pool from "./db.js";
+
+try {
+  const connection = await pool.getConnection();
+
+  console.log("MySQL connected successfully");
+
+  connection.release();
+} catch (error) {
+  console.error("MySQL connection failed:", error);
+}

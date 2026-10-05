@@ -10,6 +10,7 @@ import {
   where,
   orderBy,
   serverTimestamp,
+  onSnapshot,
 } from "firebase/firestore";
 
 import { db } from "./config";
@@ -112,10 +113,12 @@ export async function searchUsers(username) {
 
   const snapshot = await getDocs(q);
 
-  return snapshot.docs.map((doc) => serializeDoc({
-    id: doc.id,
-    ...doc.data(),
-  }));
+  return snapshot.docs.map((doc) =>
+    serializeDoc({
+      id: doc.id,
+      ...doc.data(),
+    }),
+  );
 }
 
 /*
@@ -131,7 +134,7 @@ export async function searchUserByUsername(username) {
 
   const q = query(
     usersRef,
-    where("username", "==", username.trim().toLowerCase())
+    where("username", "==", username.trim().toLowerCase()),
   );
 
   const snapshot = await getDocs(q);
@@ -245,12 +248,55 @@ export async function getUserChats(uid) {
 
   const snapshot = await getDocs(q);
 
-  return snapshot.docs.map((doc) => serializeDoc({
-    id: doc.id,
-    ...doc.data(),
-  }));
+  return snapshot.docs.map((doc) =>
+    serializeDoc({
+      id: doc.id,
+      ...doc.data(),
+    }),
+  );
 }
 
+/*
+  Subscribe to user's chats in real time
+
+  Whenever a chat is created or its lastMessage /
+  lastMessageAt changes, the callback runs automatically.
+*/
+export function subscribeToUserChats(uid, callback, onError) {
+  if (!uid) {
+    return () => {};
+  }
+
+  const chatsRef = collection(db, "chats");
+
+  const q = query(
+    chatsRef,
+    where("participants", "array-contains", uid),
+  );
+
+  const unsubscribe = onSnapshot(
+    q,
+    (snapshot) => {
+      const chats = snapshot.docs.map((doc) =>
+        serializeDoc({
+          id: doc.id,
+          ...doc.data(),
+        }),
+      );
+
+      callback(chats);
+    },
+    (error) => {
+      console.error("Chat subscription error:", error);
+
+      if (onError) {
+        onError(error);
+      }
+    },
+  );
+
+  return unsubscribe;
+}
 /* =====================================================
    MESSAGES
 ===================================================== */
@@ -276,8 +322,15 @@ export async function sendMessageToFirestore(chatId, messageData) {
   const message = {
     senderId: messageData.senderId,
     receiverId: messageData.receiverId,
+
     text: messageData.text || "",
     type: messageData.type || "text",
+
+    // File information
+    fileId: messageData.fileId || null,
+    fileName: messageData.fileName || "",
+    fileType: messageData.fileType || "",
+    fileSize: messageData.fileSize || 0,
 
     createdAt: Date.now(),
 
@@ -289,10 +342,23 @@ export async function sendMessageToFirestore(chatId, messageData) {
   /*
     Update parent chat
   */
+
   const chatRef = doc(db, "chats", chatId);
 
+  let lastMessage = message.text;
+
+  if (!lastMessage) {
+    if (message.type === "image") {
+      lastMessage = "Photo";
+    } else if (message.type === "video") {
+      lastMessage = "Video";
+    } else if (message.type === "document") {
+      lastMessage = message.fileName || "Document";
+    }
+  }
+
   await updateDoc(chatRef, {
-    lastMessage: message.text,
+    lastMessage,
     lastMessageAt: Date.now(),
   });
 
@@ -308,7 +374,7 @@ const serializeDoc = (data) => {
   const serialized = { ...data };
   for (const key of Object.keys(serialized)) {
     const val = serialized[key];
-    if (val && typeof val === 'object' && typeof val.toMillis === 'function') {
+    if (val && typeof val === "object" && typeof val.toMillis === "function") {
       serialized[key] = val.toMillis();
     }
   }
@@ -329,10 +395,12 @@ export async function getChatMessages(chatId) {
 
   const snapshot = await getDocs(q);
 
-  return snapshot.docs.map((doc) => serializeDoc({
-    id: doc.id,
-    ...doc.data(),
-  }));
+  return snapshot.docs.map((doc) =>
+    serializeDoc({
+      id: doc.id,
+      ...doc.data(),
+    }),
+  );
 }
 
 /*

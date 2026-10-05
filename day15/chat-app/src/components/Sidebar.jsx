@@ -1,41 +1,19 @@
 import { Search, Settings, LogOut, UserCircle, X } from "lucide-react";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { useNavigate } from "react-router-dom";
 
-import { searchUserByUsername, createOrGetChat } from "../firebase/firestore";
+import {
+  searchUserByUsername,
+  createOrGetChat,
+  subscribeToUserChats,
+  getUserById,
+} from "../firebase/firestore";
 
 import { logoutUser } from "../firebase/auth";
 
 import { setActiveChat } from "../redux/slices/chatSlice";
-
-const temporaryChats = [
-  {
-    id: 1,
-    name: "Alex",
-    username: "alex",
-    message: "Hey, what's up?",
-    time: "10:42 AM",
-    unread: 2,
-  },
-  {
-    id: 2,
-    name: "Sarah",
-    username: "sarah",
-    message: "See you tomorrow.",
-    time: "Yesterday",
-    unread: 0,
-  },
-  {
-    id: 3,
-    name: "David",
-    username: "david",
-    message: "That sounds good.",
-    time: "Monday",
-    unread: 0,
-  },
-];
 
 function Sidebar() {
   const dispatch = useDispatch();
@@ -48,9 +26,136 @@ function Sidebar() {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
 
-  // --------------------------------
+  const [chats, setChats] = useState([]);
+  const [loadingChats, setLoadingChats] = useState(false);
+
+  // ==========================================
+  // FORMAT CHAT TIME
+  // ==========================================
+
+  const formatChatTime = (timestamp) => {
+    if (!timestamp) {
+      return "";
+    }
+
+    const messageDate = new Date(timestamp);
+    const now = new Date();
+
+    const isToday =
+      messageDate.getDate() === now.getDate() &&
+      messageDate.getMonth() === now.getMonth() &&
+      messageDate.getFullYear() === now.getFullYear();
+
+    if (isToday) {
+      return messageDate.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    }
+
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    const isYesterday =
+      messageDate.getDate() === yesterday.getDate() &&
+      messageDate.getMonth() === yesterday.getMonth() &&
+      messageDate.getFullYear() === yesterday.getFullYear();
+
+    if (isYesterday) {
+      return "Yesterday";
+    }
+
+    return messageDate.toLocaleDateString([], {
+      day: "2-digit",
+      month: "short",
+    });
+  };
+
+  // ==========================================
+  // LOAD REAL CHATS
+  // ==========================================
+
+  useEffect(() => {
+    if (!user?.uid) {
+      setChats([]);
+      return;
+    }
+
+    setLoadingChats(true);
+
+    const unsubscribe = subscribeToUserChats(
+      user.uid,
+
+      async (userChats) => {
+        try {
+          const chatsWithUsers = await Promise.all(
+            userChats.map(async (chat) => {
+              // Don't show empty conversations
+              if (!chat.lastMessage?.trim()) {
+                return null;
+              }
+
+              const otherUserId = chat.participants?.find(
+                (participantId) => participantId !== user.uid,
+              );
+
+              if (!otherUserId) {
+                return null;
+              }
+
+              const otherUser = await getUserById(otherUserId);
+
+              if (!otherUser) {
+                return null;
+              }
+
+              return {
+                ...chat,
+                otherUser,
+              };
+            }),
+          );
+
+          const validChats = chatsWithUsers.filter(Boolean);
+
+          // Newest message first
+          validChats.sort(
+            (a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0),
+          );
+
+          setChats(validChats);
+        } catch (error) {
+          console.error("Failed to process chat updates:", error);
+        } finally {
+          setLoadingChats(false);
+        }
+      },
+
+      (error) => {
+        console.error("Failed to listen for chats:", error);
+
+        setLoadingChats(false);
+      },
+    );
+
+    return () => {
+      console.log("Unsubscribing from chat updates");
+      unsubscribe();
+    };
+  }, [user?.uid]);
+
+  /*
+ * =====================================================
+ * AUTO SCROLL TO LATEST MESSAGE
+ * =====================================================
+ */
+
+
+
+  // ==========================================
   // SEARCH USER
-  // --------------------------------
+  // ==========================================
+
   const handleSearch = async (e) => {
     e.preventDefault();
 
@@ -89,22 +194,10 @@ function Sidebar() {
     }
   };
 
-  // Helper to convert Firestore Timestamps to numbers
-  const serializeUser = (userData) => {
-    if (!userData) return null;
-    const serialized = { ...userData };
-    for (const key of Object.keys(serialized)) {
-      const val = serialized[key];
-      if (val && typeof val === 'object' && typeof val.toMillis === 'function') {
-        serialized[key] = val.toMillis();
-      }
-    }
-    return serialized;
-  };
+  // ==========================================
+  // OPEN CHAT FROM SEARCH
+  // ==========================================
 
-  // --------------------------------
-  // OPEN CHAT
-  // --------------------------------
   const handleOpenChat = async (selectedUser) => {
     try {
       if (!user?.uid || !selectedUser?.uid) {
@@ -117,9 +210,6 @@ function Sidebar() {
 
       console.log("Chat created/found:", chat);
 
-      // Convert Firebase Timestamp objects
-      // into normal numbers before putting them
-      // inside Redux.
       const serializableChat = {
         ...chat,
 
@@ -131,10 +221,8 @@ function Sidebar() {
           ? chat.updatedAt.toMillis()
           : chat.updatedAt,
 
-        otherUser: serializeUser(selectedUser),
+        otherUser: selectedUser,
       };
-
-      console.log("Serializable chat:", serializableChat);
 
       dispatch(setActiveChat(serializableChat));
 
@@ -149,23 +237,50 @@ function Sidebar() {
     }
   };
 
-  // --------------------------------
+  // ==========================================
+  // OPEN EXISTING CHAT
+  // ==========================================
+
+  const handleOpenExistingChat = (chat) => {
+    if (!chat?.otherUser) {
+      return;
+    }
+
+    const serializableChat = {
+      ...chat,
+
+      createdAt: chat.createdAt?.toMillis
+        ? chat.createdAt.toMillis()
+        : chat.createdAt,
+
+      lastMessageAt: chat.lastMessageAt?.toMillis
+        ? chat.lastMessageAt.toMillis()
+        : chat.lastMessageAt,
+
+      otherUser: chat.otherUser,
+    };
+
+    dispatch(setActiveChat(serializableChat));
+  };
+
+  // ==========================================
   // CLEAR SEARCH
-  // --------------------------------
+  // ==========================================
+
   const clearSearch = () => {
     setSearch("");
     setSearchResult(null);
     setSearchError("");
   };
 
-  // --------------------------------
+  // ==========================================
   // LOGOUT
-  // --------------------------------
+  // ==========================================
+
   const handleLogout = async () => {
     try {
       await logoutUser();
 
-      // Go back to login
       navigate("/login");
     } catch (error) {
       console.error("Logout failed:", error);
@@ -186,7 +301,7 @@ function Sidebar() {
         flex-col
       "
     >
-      {/* ================================
+      {/* =================================
           HEADER
       ================================= */}
 
@@ -213,7 +328,7 @@ function Sidebar() {
           </div>
         </div>
 
-        {/* ================================
+        {/* =================================
             SEARCH
         ================================= */}
 
@@ -275,27 +390,21 @@ function Sidebar() {
         </form>
       </div>
 
-      {/* ================================
+      {/* =================================
           SEARCH RESULTS
       ================================= */}
 
       {search && (
         <div className="px-4 pt-4">
-          {/* Searching */}
-
           {searching && (
             <div className="px-3 py-4 text-sm text-[#75708C]">Searching...</div>
           )}
-
-          {/* Search error */}
 
           {searchError && !searching && (
             <div className="px-3 py-4 rounded-xl bg-[#C59594]/20">
               <p className="text-sm text-[#010101]">{searchError}</p>
             </div>
           )}
-
-          {/* Search result */}
 
           {searchResult && !searching && (
             <button
@@ -314,8 +423,6 @@ function Sidebar() {
                 text-left
               "
             >
-              {/* Avatar */}
-
               <div
                 className="
                   w-11
@@ -329,10 +436,8 @@ function Sidebar() {
                   justify-center
                 "
               >
-                {searchResult.displayName?.charAt(0).toUpperCase()}
+                {searchResult.displayName?.charAt(0).toUpperCase() || "U"}
               </div>
-
-              {/* User information */}
 
               <div className="min-w-0">
                 <p className="font-semibold text-sm truncate">
@@ -348,8 +453,8 @@ function Sidebar() {
         </div>
       )}
 
-      {/* ================================
-          CONVERSATIONS
+      {/* =================================
+          REAL CONVERSATIONS
       ================================= */}
 
       <div className="flex-1 overflow-y-auto">
@@ -369,92 +474,117 @@ function Sidebar() {
               </p>
             </div>
 
-            {temporaryChats.map((chat) => (
-              <button
-                key={chat.id}
-                className="
-                  w-full
-                  px-5
-                  py-3
-                  flex
-                  items-center
-                  gap-3
-                  text-left
-                  hover:bg-[#C7DBF7]/40
-                  transition
-                "
-              >
-                {/* Avatar */}
+{loadingChats ? (
+  <div className="px-5 py-6 text-sm text-[#75708C]">
+    Loading conversations...
+  </div>
+) : chats.length === 0 ? (
+  <div className="px-5 py-10 text-center">
+    <p className="text-sm font-medium text-[#010101]">
+      No conversations yet
+    </p>
 
-                <div
-                  className="
-                    w-12
-                    h-12
-                    shrink-0
-                    rounded-full
-                    bg-[#BFC7DE]
-                    flex
-                    items-center
-                    justify-center
-                  "
-                >
-                  <span className="font-semibold text-[#010101]">
-                    {chat.name.charAt(0)}
-                  </span>
-                </div>
+    <p className="text-xs text-[#75708C] mt-1">
+      Search for a username to start chatting.
+    </p>
+  </div>
+) : (
+  chats.map((chat) => (
+    <button
+      key={chat.id}
+      onClick={() => {
+        dispatch(
+          setActiveChat({
+            ...chat,
+            otherUser: chat.otherUser,
+          }),
+        );
+      }}
+      className="
+        w-full
+        px-5
+        py-3
+        flex
+        items-center
+        gap-3
+        text-left
+        hover:bg-[#C7DBF7]/40
+        transition
+      "
+    >
+      {/* Avatar */}
 
-                {/* Chat information */}
+      <div
+        className="
+          w-12
+          h-12
+          shrink-0
+          rounded-full
+          bg-[#BFC7DE]
+          flex
+          items-center
+          justify-center
+        "
+      >
+        {chat.otherUser?.photoURL ? (
+          <img
+            src={chat.otherUser.photoURL}
+            alt={chat.otherUser.displayName}
+            className="
+              w-full
+              h-full
+              rounded-full
+              object-cover
+            "
+          />
+        ) : (
+          <span className="font-semibold text-[#010101]">
+            {chat.otherUser?.displayName
+              ?.charAt(0)
+              .toUpperCase() || "U"}
+          </span>
+        )}
+      </div>
 
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-2">
-                    <h3 className="font-semibold text-sm truncate">
-                      {chat.name}
-                    </h3>
+      {/* Chat information */}
 
-                    <span className="text-[11px] text-[#75708C] shrink-0">
-                      {chat.time}
-                    </span>
-                  </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="font-semibold text-sm truncate">
+            {chat.otherUser?.displayName ||
+              chat.otherUser?.username ||
+              "User"}
+          </h3>
 
-                  <div className="flex items-center justify-between gap-2 mt-1">
-                    <p className="text-xs text-[#75708C] truncate">
-                      {chat.message}
-                    </p>
+          <span className="text-[11px] text-[#75708C] shrink-0">
+            {chat.lastMessageAt
+              ? new Date(
+                  chat.lastMessageAt,
+                ).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
+              : ""}
+          </span>
+        </div>
 
-                    {chat.unread > 0 && (
-                      <span
-                        className="
-                          min-w-5
-                          h-5
-                          px-1.5
-                          rounded-full
-                          bg-[#75708C]
-                          text-white
-                          text-[10px]
-                          flex
-                          items-center
-                          justify-center
-                        "
-                      >
-                        {chat.unread}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </button>
-            ))}
+        <p className="text-xs text-[#75708C] truncate mt-1">
+          {chat.lastMessage}
+        </p>
+      </div>
+    </button>
+  ))
+)}
           </>
         )}
       </div>
 
-      {/* ================================
+      {/* =================================
           BOTTOM USER SECTION
       ================================= */}
 
       <div className="p-4 border-t border-[#BFC7DE]">
         <div className="flex items-center gap-3">
-          {/* User avatar */}
-
           <div
             className="
               w-10
@@ -471,8 +601,6 @@ function Sidebar() {
             </span>
           </div>
 
-          {/* User information */}
-
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold truncate">
               {user?.email || "User"}
@@ -480,8 +608,6 @@ function Sidebar() {
 
             <p className="text-xs text-[#75708C]">Online</p>
           </div>
-
-          {/* Settings */}
 
           <button
             className="
@@ -497,8 +623,6 @@ function Sidebar() {
           >
             <Settings size={18} />
           </button>
-
-          {/* Logout */}
 
           <button
             onClick={handleLogout}

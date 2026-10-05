@@ -37,6 +37,7 @@ function ChatWindow() {
 
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef(null);
 
   /*
    * =====================================================
@@ -74,10 +75,21 @@ function ChatWindow() {
    */
 
   useEffect(() => {
-    console.log("ChatWindow WebSocket effect running:", { 
-      hasUser: !!user, 
-      userUid: user?.uid, 
-      authLoading: false // We don't have authLoading here directly
+    if (!messagesEndRef.current) {
+      return;
+    }
+
+    messagesEndRef.current.scrollIntoView({
+      behavior: "smooth",
+      block: "end",
+    });
+  }, [messages]);
+
+  useEffect(() => {
+    console.log("ChatWindow WebSocket effect running:", {
+      hasUser: !!user,
+      userUid: user?.uid,
+      authLoading: false, // We don't have authLoading here directly
     });
 
     if (!user?.uid) {
@@ -167,7 +179,9 @@ function ChatWindow() {
         console.log("Messages loaded:", result);
 
         // Ensure messages are sorted by createdAt ascending (oldest first)
-        const sortedMessages = [...result].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+        const sortedMessages = [...result].sort(
+          (a, b) => (a.createdAt || 0) - (b.createdAt || 0),
+        );
 
         dispatch(setMessages(sortedMessages));
       } catch (error) {
@@ -178,6 +192,102 @@ function ChatWindow() {
     loadMessages();
   }, [chatId, dispatch]);
 
+  const handleFileSelect = async (event) => {
+    const file = event.target.files?.[0];
+
+    // Reset input so the same file can be selected again
+    event.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    if (!user?.uid) {
+      console.error("No logged-in user");
+      return;
+    }
+
+    if (!chatId) {
+      console.error("Chat ID is missing");
+      return;
+    }
+
+    if (!receiverId) {
+      console.error("Receiver ID is missing");
+      return;
+    }
+
+    try {
+      setSending(true);
+
+      console.log("Uploading file:", file.name);
+
+      const formData = new FormData();
+
+      formData.append("file", file);
+      formData.append("uploadedBy", user.uid);
+      formData.append("chatId", chatId);
+
+      const response = await fetch("http://localhost:5000/api/files/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error("File upload failed");
+      }
+
+      const result = await response.json();
+
+      console.log("File uploaded:", result);
+
+      /*
+       * Save file information as a Firestore message
+       */
+
+      const savedMessage = await sendMessageToFirestore(chatId, {
+        senderId: user.uid,
+        receiverId: receiverId,
+
+        text: "",
+
+        type: "image",
+
+        fileId: result.fileId,
+        fileName: result.fileName,
+        fileType: result.fileType,
+        fileSize: result.fileSize,
+      });
+
+      console.log("Image message saved:", savedMessage);
+
+      /*
+       * Show immediately for sender
+       */
+
+      dispatch(addMessage(savedMessage));
+
+      /*
+       * Send to receiver through WebSocket
+       */
+
+      const wsMessage = {
+        type: "message",
+
+        senderId: user.uid,
+        receiverId: receiverId,
+        chatId: chatId,
+
+        message: savedMessage,
+      };
+
+      sendWebSocketMessage(wsMessage);
+    } catch (error) {
+      console.error("Failed to upload image:", error);
+    } finally {
+      setSending(false);
+    }
+  };
   /*
    * =====================================================
    * SEND MESSAGE
@@ -429,47 +539,55 @@ function ChatWindow() {
                   className={
                     isMine
                       ? `
-                        bg-[#75708C]
-                        text-white
-                        rounded-2xl
-                        rounded-br-md
-                        px-4
-                        py-3
-                        shadow-sm
-                      `
+        bg-[#75708C]
+        text-white
+        rounded-2xl
+        rounded-br-md
+        px-3
+        py-3
+        shadow-sm
+      `
                       : `
-                        bg-white
-                        border
-                        border-[#BFC7DE]
-                        rounded-2xl
-                        rounded-bl-md
-                        px-4
-                        py-3
-                        shadow-sm
-                      `
+        bg-white
+        border
+        border-[#BFC7DE]
+        rounded-2xl
+        rounded-bl-md
+        px-3
+        py-3
+        shadow-sm
+      `
                   }
                 >
-                  <p className="text-sm">{message.text}</p>
+                  {message.type === "image" ? (
+                    <img
+                      src={`http://localhost:5000/api/files/${message.fileId}`}
+                      alt={message.fileName || "Image"}
+                      className="max-w-[280px] max-h-[350px] rounded-xl object-cover"
+                    />
+                  ) : (
+                    <p className="text-sm">{message.text}</p>
+                  )}
                 </div>
 
                 <span
                   className={
                     isMine
                       ? `
-                        text-[10px]
-                        text-[#75708C]
-                        mr-2
-                        mt-1
-                        block
-                        text-right
-                      `
+                  text-[10px]
+                  text-[#75708C]
+                  mr-2
+                  mt-1
+                  block
+                  text-right
+                `
                       : `
-                        text-[10px]
-                        text-[#75708C]
-                        ml-2
-                        mt-1
-                        block
-                      `
+                  text-[10px]
+                  text-[#75708C]
+                  ml-2
+                  mt-1
+                  block
+                `
                   }
                 >
                   {message.createdAt
@@ -483,6 +601,9 @@ function ChatWindow() {
             </div>
           );
         })}
+
+        {/* Invisible element used for auto-scrolling */}
+        <div ref={messagesEndRef} />
       </main>
 
       {/* =================================================
@@ -491,20 +612,29 @@ function ChatWindow() {
 
       <div className="p-4 bg-white border-t border-[#BFC7DE]">
         <div className="flex items-center gap-2">
-          <button
+          <label
             className="
-              w-10
-              h-10
-              shrink-0
-              rounded-xl
-              hover:bg-[#C7DBF7]
-              flex
-              items-center
-              justify-center
-            "
+    w-10
+    h-10
+    shrink-0
+    rounded-xl
+    hover:bg-[#C7DBF7]
+    flex
+    items-center
+    justify-center
+    cursor-pointer
+  "
           >
             <Paperclip size={20} />
-          </button>
+
+            <input
+              type="file"
+              accept="image/*"
+              onChange={handleFileSelect}
+              className="hidden"
+              disabled={sending}
+            />
+          </label>
 
           <div className="flex-1 relative">
             <input
