@@ -1,101 +1,44 @@
-import { Menu, Bell, ChevronDown } from "lucide-react";
-
+import { Bell, ChevronDown } from "lucide-react";
 import { useSelector } from "react-redux";
 
-function AdminHeader({ onMenuClick }) {
+function AdminHeader() {
   const { profile } = useSelector((state) => state.auth);
-
-  const adminName = profile?.name || "Administrator";
-
-  const firstLetter = adminName.charAt(0).toUpperCase();
+  const adminName = profile?.name || "System Administrator";
 
   return (
-    <header className="h-20 bg-white border-b border-slate-200 px-4 sm:px-6 flex items-center justify-between">
-      {/* Left section */}
-      <div className="flex items-center gap-4">
-        {/* Mobile menu */}
-        <button
-          onClick={onMenuClick}
-          className="
-            lg:hidden
-            p-2
-            rounded-lg
-            hover:bg-slate-100
-            transition
-          "
-        >
-          <Menu size={22} className="text-slate-700" />
-        </button>
-
+    <header className="sticky top-0 z-30 h-[78px] shrink-0 border-b border-[#eadfd8] bg-[#fffaf7]/95 backdrop-blur-xl">
+      <div className="flex h-full items-center justify-between px-5 lg:px-8">
         <div>
-          <h2 className="text-lg font-semibold text-slate-900">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#e06464]">
             Administration
-          </h2>
-
-          <p className="text-xs text-slate-500 hidden sm:block">
-            Manage your institution
           </p>
+          <h1 className="mt-1 text-lg font-semibold tracking-tight text-[#48252a] sm:text-xl">
+            Student Management System
+          </h1>
         </div>
-      </div>
 
-      {/* Right section */}
-      <div className="flex items-center gap-3">
-        {/* Notification */}
-        <button
-          className="
-            relative
-            p-2.5
-            rounded-lg
-            hover:bg-slate-100
-            transition
-          "
-        >
-          <Bell size={20} className="text-slate-600" />
-
-          {/* Notification dot */}
-          <span
-            className="
-              absolute
-              top-2
-              right-2
-              w-2
-              h-2
-              bg-red-500
-              rounded-full
-            "
-          />
-        </button>
-
-        {/* Divider */}
-        <div className="h-8 w-px bg-slate-200" />
-
-        {/* Admin profile */}
         <div className="flex items-center gap-3">
-          {/* Name */}
-          <div className="hidden sm:block text-right">
-            <p className="text-sm font-semibold text-slate-900">{adminName}</p>
+          <button className="relative flex h-10 w-10 items-center justify-center rounded-xl text-[#8b7774] transition hover:bg-[#fbc6b9]/30 hover:text-[#48252a]">
+            <Bell size={19} strokeWidth={1.8} />
+            <span className="absolute right-2.5 top-2 h-1.5 w-1.5 rounded-full bg-[#e06464]" />
+          </button>
 
-            <p className="text-xs text-slate-500">Administrator</p>
-          </div>
+          <div className="mx-1 hidden h-8 w-px bg-[#eadfd8] sm:block" />
 
-          {/* Avatar */}
-          <div
-            className="
-              w-10
-              h-10
-              rounded-full
-              bg-blue-100
-              text-blue-600
-              flex
-              items-center
-              justify-center
-              font-semibold
-            "
-          >
-            {firstLetter}
-          </div>
-
-          <ChevronDown size={16} className="text-slate-400 hidden sm:block" />
+          <button className="flex items-center gap-2 rounded-xl px-2 py-1.5 transition hover:bg-[#f8f2ee]">
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#fbc6b9] text-[#48252a]">
+              <span className="text-xs font-bold">
+                {adminName.charAt(0).toUpperCase()}
+              </span>
+            </div>
+            <div className="hidden text-left md:block">
+              <p className="max-w-[160px] truncate text-xs font-semibold text-[#48252a]">
+                {adminName}
+              </p>
+              <p className="text-[10px] text-[#8b7774]">Administrator</p>
+            </div>
+            <ChevronDown size={15} className="text-[#8b7774]" />
+          </button>
         </div>
       </div>
     </header>

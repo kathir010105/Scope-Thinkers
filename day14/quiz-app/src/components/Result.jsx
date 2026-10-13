@@ -2,7 +2,7 @@ import { useContext } from "react";
 import QuizContext from "../context/QuizContext";
 
 function Result() {
-  const { score, questions, restartQuiz } = useContext(QuizContext);
+  const { score, questions, restartQuiz, goHome } = useContext(QuizContext);
 
   const percentage = Math.round((score / questions.length) * 100);
 
@@ -23,6 +23,25 @@ function Result() {
 
           <p className="text-slate-400 mt-3">You scored {percentage}%</p>
         </div>
+
+        <button
+          onClick={goHome}
+          className="
+            px-6
+            py-3
+            bg-slate-800
+            hover:bg-slate-700
+            border
+            border-slate-700
+            text-slate-300
+            font-semibold
+            rounded-xl
+            transition-all
+            duration-200
+        "
+        >
+          ← Home
+        </button>
 
         <button
           onClick={restartQuiz}

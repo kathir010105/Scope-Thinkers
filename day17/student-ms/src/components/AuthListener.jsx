@@ -18,7 +18,6 @@ function AuthListener() {
 
       try {
         const userRef = doc(db, "users", firebaseUser.uid);
-
         const userSnapshot = await getDoc(userRef);
 
         if (!userSnapshot.exists()) {
@@ -26,13 +25,20 @@ function AuthListener() {
           return;
         }
 
-        const profile = userSnapshot.data();
+        const profileData = userSnapshot.data();
 
-        const serializableProfile = {
-          ...profile,
-          createdAt: profile.createdAt?.toDate
-            ? profile.createdAt.toDate().toISOString()
-            : profile.createdAt,
+        // Convert Firebase Timestamp values
+        // into normal JavaScript serializable values.
+        const profile = {
+          ...profileData,
+
+          createdAt: profileData.createdAt
+            ? profileData.createdAt.toDate().toISOString()
+            : null,
+
+          updatedAt: profileData.updatedAt
+            ? profileData.updatedAt.toDate().toISOString()
+            : null,
         };
 
         dispatch(
@@ -41,13 +47,15 @@ function AuthListener() {
               uid: firebaseUser.uid,
               email: firebaseUser.email,
             },
-            profile: serializableProfile,
+            profile,
           }),
         );
       } catch (error) {
         console.error("Failed to load user profile:", error);
 
         dispatch(clearUser());
+      } finally {
+        dispatch(setLoading(false));
       }
     });
 

@@ -1,357 +1,352 @@
-import { useState } from "react";
-
+import { useEffect, useState } from "react";
 import {
   Users,
-  UserPlus,
   GraduationCap,
+  UserCog,
+  ClipboardList,
   Building2,
+  BookOpen,
+  CalendarCheck,
+  Bell,
+  FileText,
   ArrowUpRight,
-  Clock,
+  Loader2,
+  Activity,
 } from "lucide-react";
-
+import { collection, getDocs } from "firebase/firestore";
+import { db } from "../../firebase/firebase";
 import AdminSidebar from "../../components/admin/AdminSidebar";
 import AdminHeader from "../../components/admin/AdminHeader";
 
-const stats = [
-  {
-    title: "Total Users",
-    value: "0",
-    description: "All registered users",
-    icon: Users,
-  },
-  {
-    title: "Pending Requests",
-    value: "0",
-    description: "Awaiting approval",
-    icon: UserPlus,
-  },
-  {
-    title: "Students",
-    value: "0",
-    description: "Registered students",
-    icon: GraduationCap,
-  },
-  {
-    title: "Departments",
-    value: "0",
-    description: "Active departments",
-    icon: Building2,
-  },
-];
-
 function AdminDashboard() {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarExpanded, setSidebarExpanded] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [stats, setStats] = useState({
+    totalUsers: 0,
+    students: 0,
+    teachers: 0,
+    pendingRequests: 0,
+    departments: 0,
+    courses: 0,
+    attendance: 0,
+    notifications: 0,
+  });
+
+  useEffect(() => {
+    fetchDashboardData();
+  }, []);
+
+  const fetchDashboardData = async () => {
+    try {
+      setLoading(true);
+      setError("");
+
+      const usersSnapshot = await getDocs(collection(db, "users"));
+
+      const users = usersSnapshot.docs.map((item) => ({
+        id: item.id,
+        ...item.data(),
+      }));
+
+      console.log("ALL USERS FROM FIRESTORE:", users);
+
+      // Normalize values before comparing
+      const getRole = (user) =>
+        String(user.role ?? "")
+          .trim()
+          .toLowerCase()
+          .replace(/^["']|["']$/g, "");
+
+      const getStatus = (user) =>
+        String(user.status ?? "")
+          .trim()
+          .toLowerCase()
+          .replace(/^["']|["']$/g, "");
+
+      users.forEach((user) => {
+        console.log(
+          "USER:",
+          user.email,
+          "| ROLE:",
+          JSON.stringify(user.role),
+          "| NORMALIZED:",
+          getRole(user),
+        );
+      });
+
+      const students = users.filter(
+        (user) => getRole(user) === "student",
+      ).length;
+
+      const teachers = users.filter(
+        (user) => getRole(user) === "teacher",
+      ).length;
+
+      const pendingRequests = users.filter(
+        (user) => getStatus(user) === "pending",
+      ).length;
+
+      let departments = 0;
+      let courses = 0;
+
+      try {
+        departments = (await getDocs(collection(db, "departments"))).size;
+      } catch {
+        departments = 0;
+      }
+
+      try {
+        courses = (await getDocs(collection(db, "courses"))).size;
+      } catch {
+        courses = 0;
+      }
+
+      console.log("FINAL COUNTS:");
+      console.log("Total:", users.length);
+      console.log("Students:", students);
+      console.log("Teachers:", teachers);
+      console.log("Pending:", pendingRequests);
+
+      setStats({
+        totalUsers: users.length,
+        students,
+        teachers,
+        pendingRequests,
+        departments,
+        courses,
+        attendance: 0,
+        notifications: 0,
+      });
+    } catch (err) {
+      console.error("Failed to load dashboard:", err);
+      setError("Unable to load dashboard data.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const cards = [
+    { title: "Total users", value: stats.totalUsers, icon: Users },
+    { title: "Students", value: stats.students, icon: GraduationCap },
+    { title: "Teachers", value: stats.teachers, icon: UserCog },
+    { title: "Departments", value: stats.departments, icon: Building2 },
+  ];
 
   return (
-    <div className="min-h-screen bg-slate-50 flex">
-      {/* Sidebar */}
+    <div className="flex min-h-screen w-full bg-[#f8f2ee]">
       <AdminSidebar
-        isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
+        expanded={sidebarExpanded}
+        setExpanded={setSidebarExpanded}
       />
 
-      {/* Main area */}
-      <div className="flex-1 min-w-0">
-        {/* Header */}
-        <AdminHeader onMenuClick={() => setSidebarOpen(true)} />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <AdminHeader />
 
-        {/* Content */}
-        <main className="p-4 sm:p-6 lg:p-8">
-          {/* Page heading */}
-          <div className="mb-8">
-            <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
-
-            <p className="mt-1 text-sm text-slate-500">
-              Overview of your student management system.
-            </p>
-          </div>
-
-          {/* Statistics */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-            {stats.map((stat) => {
-              const Icon = stat.icon;
-
-              return (
-                <div
-                  key={stat.title}
-                  className="
-                    bg-white
-                    border
-                    border-slate-200
-                    rounded-xl
-                    p-5
-                    hover:shadow-sm
-                    transition
-                  "
-                >
-                  <div className="flex items-start justify-between">
-                    {/* Information */}
-                    <div>
-                      <p className="text-sm font-medium text-slate-500">
-                        {stat.title}
-                      </p>
-
-                      <p className="mt-2 text-3xl font-bold text-slate-900">
-                        {stat.value}
-                      </p>
-
-                      <p className="mt-1 text-xs text-slate-400">
-                        {stat.description}
-                      </p>
-                    </div>
-
-                    {/* Icon */}
-                    <div
-                      className="
-                        w-11
-                        h-11
-                        rounded-lg
-                        bg-blue-50
-                        text-blue-600
-                        flex
-                        items-center
-                        justify-center
-                      "
-                    >
-                      <Icon size={22} />
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Main content */}
-          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mt-6">
-            {/* Registration requests */}
-            <div
-              className="
-                xl:col-span-2
-                bg-white
-                border
-                border-slate-200
-                rounded-xl
-              "
-            >
-              {/* Header */}
-              <div
-                className="
-                  p-5
-                  border-b
-                  border-slate-200
-                  flex
-                  items-center
-                  justify-between
-                "
-              >
-                <div>
-                  <h2 className="font-semibold text-slate-900">
-                    Registration Requests
-                  </h2>
-
-                  <p className="text-sm text-slate-500 mt-1">
-                    Users waiting for administrator approval.
-                  </p>
-                </div>
-
-                <button
-                  className="
-                    flex
-                    items-center
-                    gap-1
-                    text-sm
-                    font-medium
-                    text-blue-600
-                    hover:text-blue-700
-                  "
-                >
-                  View all
-                  <ArrowUpRight size={16} />
-                </button>
-              </div>
-
-              {/* Empty state */}
-              <div className="p-5">
-                <div
-                  className="
-                    py-12
-                    flex
-                    flex-col
-                    items-center
-                    justify-center
-                    text-center
-                  "
-                >
-                  <div
-                    className="
-                      w-12
-                      h-12
-                      rounded-full
-                      bg-slate-100
-                      flex
-                      items-center
-                      justify-center
-                    "
-                  >
-                    <Clock size={22} className="text-slate-400" />
-                  </div>
-
-                  <h3 className="mt-4 font-medium text-slate-700">
-                    No pending requests
-                  </h3>
-
-                  <p className="mt-1 text-sm text-slate-400 max-w-sm">
-                    New registration requests will appear here when invited
-                    users complete their registration.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Quick actions */}
-            <div
-              className="
-                bg-white
-                border
-                border-slate-200
-                rounded-xl
-              "
-            >
-              {/* Header */}
-              <div className="p-5 border-b border-slate-200">
-                <h2 className="font-semibold text-slate-900">Quick Actions</h2>
-
-                <p className="text-sm text-slate-500 mt-1">
-                  Common administrative tasks.
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-[1500px] p-5 lg:p-8">
+            <div className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#e06464]">
+                  Overview
+                </p>
+                <h2 className="mt-1 text-3xl font-semibold tracking-tight text-[#48252a]">
+                  Dashboard
+                </h2>
+                <p className="mt-2 text-sm text-[#8b7774]">
+                  A quick view of your institution.
                 </p>
               </div>
 
-              {/* Actions */}
-              <div className="p-4 space-y-2">
-                {/* Invite user */}
-                <button
-                  className="
-                    w-full
-                    flex
-                    items-center
-                    gap-3
-                    p-3
-                    rounded-lg
-                    hover:bg-blue-50
-                    text-left
-                    transition
-                  "
-                >
-                  <div
-                    className="
-                      w-9
-                      h-9
-                      rounded-lg
-                      bg-blue-50
-                      text-blue-600
-                      flex
-                      items-center
-                      justify-center
-                    "
-                  >
-                    <UserPlus size={18} />
-                  </div>
+              <button
+                onClick={fetchDashboardData}
+                className="inline-flex w-fit items-center gap-2 rounded-xl border border-[#eadfd8] bg-[#fffaf7] px-4 py-2.5 text-xs font-semibold text-[#48252a] shadow-sm transition hover:border-[#fbc6b9] hover:bg-white"
+              >
+                <Activity size={15} /> Refresh data
+              </button>
+            </div>
 
-                  <div>
-                    <p className="text-sm font-medium text-slate-800">
-                      Invite User
-                    </p>
-
-                    <p className="text-xs text-slate-500">
-                      Create a registration invitation
-                    </p>
-                  </div>
-                </button>
-
-                {/* Add department */}
-                <button
-                  className="
-                    w-full
-                    flex
-                    items-center
-                    gap-3
-                    p-3
-                    rounded-lg
-                    hover:bg-blue-50
-                    text-left
-                    transition
-                  "
-                >
-                  <div
-                    className="
-                      w-9
-                      h-9
-                      rounded-lg
-                      bg-blue-50
-                      text-blue-600
-                      flex
-                      items-center
-                      justify-center
-                    "
-                  >
-                    <Building2 size={18} />
-                  </div>
-
-                  <div>
-                    <p className="text-sm font-medium text-slate-800">
-                      Add Department
-                    </p>
-
-                    <p className="text-xs text-slate-500">
-                      Create a new department
-                    </p>
-                  </div>
-                </button>
-
-                {/* Manage users */}
-                <button
-                  className="
-                    w-full
-                    flex
-                    items-center
-                    gap-3
-                    p-3
-                    rounded-lg
-                    hover:bg-blue-50
-                    text-left
-                    transition
-                  "
-                >
-                  <div
-                    className="
-                      w-9
-                      h-9
-                      rounded-lg
-                      bg-blue-50
-                      text-blue-600
-                      flex
-                      items-center
-                      justify-center
-                    "
-                  >
-                    <Users size={18} />
-                  </div>
-
-                  <div>
-                    <p className="text-sm font-medium text-slate-800">
-                      Manage Users
-                    </p>
-
-                    <p className="text-xs text-slate-500">
-                      View and manage system users
-                    </p>
-                  </div>
-                </button>
+            {error && (
+              <div className="mb-5 rounded-xl border border-[#e06464]/20 bg-[#fbc6b9]/20 px-4 py-3 text-xs text-[#8b3e46]">
+                {error}
               </div>
+            )}
+
+            <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              {cards.map((card, index) => {
+                const Icon = card.icon;
+                const accents = ["#e06464", "#f1745e", "#e6a07f", "#48252a"];
+                const accent = accents[index];
+
+                return (
+                  <div
+                    key={card.title}
+                    className="group rounded-2xl border border-[#eadfd8] bg-[#fffaf7] p-5 shadow-[0_8px_30px_rgba(72,37,42,0.04)] transition hover:-translate-y-0.5 hover:shadow-[0_14px_35px_rgba(72,37,42,0.08)]"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div
+                        className="flex h-10 w-10 items-center justify-center rounded-xl"
+                        style={{
+                          backgroundColor: `${accent}18`,
+                          color: accent,
+                        }}
+                      >
+                        <Icon size={20} strokeWidth={1.8} />
+                      </div>
+                      <span className="text-[10px] font-medium text-[#b29d96]">
+                        Live
+                      </span>
+                    </div>
+                    <p className="mt-6 text-xs font-medium text-[#8b7774]">
+                      {card.title}
+                    </p>
+                    <div className="mt-1 text-3xl font-semibold tracking-tight text-[#48252a]">
+                      {loading ? (
+                        <Loader2
+                          size={26}
+                          className="animate-spin text-[#e06464]"
+                        />
+                      ) : (
+                        card.value
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </section>
+
+            <section className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <MiniStat
+                title="Pending requests"
+                value={stats.pendingRequests}
+                icon={ClipboardList}
+              />
+              <MiniStat title="Courses" value={stats.courses} icon={BookOpen} />
+              <MiniStat
+                title="Today's attendance"
+                value={`${stats.attendance}%`}
+                icon={CalendarCheck}
+              />
+              <MiniStat
+                title="Notifications"
+                value={stats.notifications}
+                icon={Bell}
+              />
+            </section>
+
+            <div className="mt-6 grid grid-cols-1 gap-5 xl:grid-cols-2">
+              <Panel title="Recent activity" icon={Activity} accent="#e06464">
+                <div className="space-y-3">
+                  <ActivityRow
+                    icon={Users}
+                    title="User directory is ready"
+                    description={`${stats.totalUsers} registered accounts`}
+                  />
+                  <ActivityRow
+                    icon={GraduationCap}
+                    title="Student accounts"
+                    description={`${stats.students} approved student profile${stats.students === 1 ? "" : "s"}`}
+                  />
+                  <ActivityRow
+                    icon={UserCog}
+                    title="Teaching accounts"
+                    description={`${stats.teachers} approved teacher profile${stats.teachers === 1 ? "" : "s"}`}
+                  />
+                </div>
+              </Panel>
+
+              <Panel
+                title="Academic snapshot"
+                icon={BookOpen}
+                accent="#f1745e"
+                action
+              >
+                <div className="grid grid-cols-2 gap-3">
+                  <Snapshot
+                    label="Courses"
+                    value={stats.courses}
+                    icon={BookOpen}
+                  />
+                  <Snapshot
+                    label="Attendance"
+                    value={`${stats.attendance}%`}
+                    icon={CalendarCheck}
+                  />
+                  <Snapshot label="Exams" value="0" icon={FileText} />
+                  <Snapshot
+                    label="Notices"
+                    value={stats.notifications}
+                    icon={Bell}
+                  />
+                </div>
+              </Panel>
             </div>
           </div>
         </main>
       </div>
+    </div>
+  );
+}
+
+function MiniStat({ title, value, icon: Icon }) {
+  return (
+    <div className="flex items-center gap-3 rounded-2xl border border-[#eadfd8] bg-white/70 px-4 py-3">
+      <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#fbc6b9]/30 text-[#e06464]">
+        <Icon size={17} />
+      </div>
+      <div>
+        <p className="text-[10px] text-[#8b7774]">{title}</p>
+        <p className="text-sm font-semibold text-[#48252a]">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function Panel({ title, icon: Icon, accent, action, children }) {
+  return (
+    <section className="rounded-2xl border border-[#eadfd8] bg-[#fffaf7] p-5 shadow-[0_8px_30px_rgba(72,37,42,0.04)]">
+      <div className="mb-5 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div
+            className="flex h-9 w-9 items-center justify-center rounded-xl"
+            style={{ backgroundColor: `${accent}18`, color: accent }}
+          >
+            <Icon size={17} />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-[#48252a]">{title}</p>
+            <p className="text-[10px] text-[#b29d96]">Updated overview</p>
+          </div>
+        </div>
+        {action && <ArrowUpRight size={17} className="text-[#b29d96]" />}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function ActivityRow({ icon: Icon, title, description }) {
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-[#eadfd8] bg-white/70 p-3">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#f8f2ee] text-[#e06464]">
+        <Icon size={16} />
+      </div>
+      <div className="min-w-0">
+        <p className="text-xs font-semibold text-[#48252a]">{title}</p>
+        <p className="mt-0.5 truncate text-[10px] text-[#8b7774]">
+          {description}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function Snapshot({ label, value, icon: Icon }) {
+  return (
+    <div className="rounded-xl border border-[#eadfd8] bg-white/70 p-4">
+      <Icon size={16} className="text-[#e06464]" />
+      <p className="mt-4 text-[10px] text-[#8b7774]">{label}</p>
+      <p className="mt-1 text-lg font-semibold text-[#48252a]">{value}</p>
     </div>
   );
 }

@@ -1,19 +1,22 @@
 import { useState } from "react";
-
 import UserSidebar from "./UserSidebar";
 import UserHeader from "./UserHeader";
 
 function UserLayout({ children }) {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarExpanded, setSidebarExpanded] = useState(false);
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <UserSidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+    <div className="flex min-h-screen w-full bg-[#f8f2ee]">
+      <UserSidebar
+        expanded={sidebarExpanded}
+        setExpanded={setSidebarExpanded}
+      />
 
-      <div className="lg:ml-64 min-h-screen">
-        <UserHeader onMenuClick={() => setSidebarOpen(true)} />
-
-        <main className="p-4 sm:p-6">{children}</main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <UserHeader />
+        <main className="min-w-0 flex-1 overflow-y-auto p-5 lg:p-8">
+          <div className="mx-auto w-full max-w-[1500px]">{children}</div>
+        </main>
       </div>
     </div>
   );

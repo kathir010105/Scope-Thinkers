@@ -1,85 +1,53 @@
-import { Menu, Bell, ChevronDown } from "lucide-react";
-
+import { Bell, ChevronDown } from "lucide-react";
 import { useSelector } from "react-redux";
 
-function UserHeader({ onMenuClick }) {
+function UserHeader() {
   const { profile } = useSelector((state) => state.auth);
-
   const name = profile?.name || "User";
+  const role = profile?.role || "student";
 
-  const firstLetter = name.charAt(0).toUpperCase();
+  const roleLabel = {
+    student: "Student",
+    teacher: "Teacher",
+    hod: "Head of Department",
+  };
 
   return (
-    <header className="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-4 sm:px-6">
-      {/* Left */}
-      <div className="flex items-center gap-4">
-        <button
-          onClick={onMenuClick}
-          className="
-            lg:hidden
-            p-2
-            rounded-lg
-            hover:bg-slate-100
-          "
-        >
-          <Menu size={22} />
-        </button>
-
+    <header className="sticky top-0 z-30 h-[78px] shrink-0 border-b border-[#eadfd8] bg-[#fffaf7]/95 backdrop-blur-xl">
+      <div className="flex h-full items-center justify-between px-5 lg:px-8">
         <div>
-          <h2 className="font-semibold text-slate-900">
-            Student Management System
-          </h2>
-
-          <p className="text-xs text-slate-400 hidden sm:block">
-            Academic Management Portal
+          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#e06464]">
+            Academic Portal
           </p>
+          <h1 className="mt-1 text-lg font-semibold tracking-tight text-[#48252a] sm:text-xl">
+            Government Polytechnic
+          </h1>
         </div>
-      </div>
 
-      {/* Right */}
-      <div className="flex items-center gap-3">
-        <button className="relative p-2.5 rounded-lg hover:bg-slate-100">
-          <Bell size={20} className="text-slate-600" />
+        <div className="flex items-center gap-3">
+          <button className="relative flex h-10 w-10 items-center justify-center rounded-xl text-[#8b7774] transition hover:bg-[#fbc6b9]/30 hover:text-[#48252a]">
+            <Bell size={19} strokeWidth={1.8} />
+            <span className="absolute right-2.5 top-2 h-1.5 w-1.5 rounded-full bg-[#e06464]" />
+          </button>
 
-          <span
-            className="
-            absolute
-            top-2
-            right-2
-            w-2
-            h-2
-            rounded-full
-            bg-red-500
-          "
-          />
-        </button>
+          <div className="mx-1 hidden h-8 w-px bg-[#eadfd8] sm:block" />
 
-        <div className="h-8 w-px bg-slate-200" />
-
-        <div className="flex items-center gap-2">
-          <div className="hidden sm:block text-right">
-            <p className="text-sm font-semibold text-slate-900">{name}</p>
-
-            <p className="text-xs text-slate-400 capitalize">{profile?.role}</p>
-          </div>
-
-          <div
-            className="
-            w-10
-            h-10
-            rounded-full
-            bg-blue-100
-            text-blue-600
-            flex
-            items-center
-            justify-center
-            font-semibold
-          "
-          >
-            {firstLetter}
-          </div>
-
-          <ChevronDown size={16} className="text-slate-400 hidden sm:block" />
+          <button className="flex items-center gap-2 rounded-xl px-2 py-1.5 transition hover:bg-[#f8f2ee]">
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#fbc6b9] text-[#48252a]">
+              <span className="text-xs font-bold">
+                {name.charAt(0).toUpperCase()}
+              </span>
+            </div>
+            <div className="hidden text-left md:block">
+              <p className="max-w-[150px] truncate text-xs font-semibold text-[#48252a]">
+                {name}
+              </p>
+              <p className="text-[10px] text-[#8b7774]">
+                {roleLabel[role] || role}
+              </p>
+            </div>
+            <ChevronDown size={15} className="text-[#8b7774]" />
+          </button>
         </div>
       </div>
     </header>

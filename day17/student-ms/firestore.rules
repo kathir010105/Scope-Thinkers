@@ -1,0 +1,313 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ============================================================
+    // HELPER FUNCTIONS
+    // ============================================================
+
+    // Check if user is authenticated
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Get the current user's Firestore profile
+    function getUserProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Get current user's role
+    function getUserRole() {
+      return getUserProfile().role;
+    }
+
+    // Get current user's status
+    function getUserStatus() {
+      return getUserProfile().status;
+    }
+
+    // Get current user's department
+    function getUserDepartment() {
+      return getUserProfile().department;
+    }
+
+    // Get current user's department ID
+    function getUserDepartmentId() {
+      return getUserProfile().departmentId;
+    }
+
+    // Check if user has approved status
+    function isApproved() {
+      return getUserStatus() == 'approved';
+    }
+
+    // Role checks
+    function isAdmin() {
+      return isSignedIn() && getUserRole() == 'admin' && isApproved();
+    }
+
+    function isHOD() {
+      return isSignedIn() && getUserRole() == 'hod' && isApproved();
+    }
+
+    function isTeacher() {
+      return isSignedIn() && getUserRole() == 'teacher' && isApproved();
+    }
+
+    function isStudent() {
+      return isSignedIn() && getUserRole() == 'student' && isApproved();
+    }
+
+    // Check if user belongs to same department
+    function isSameDepartment(departmentId) {
+      return isSignedIn() && getUserDepartmentId() == departmentId;
+    }
+
+    function isSameDepartmentName(department) {
+      return isSignedIn() && getUserDepartment() == department;
+    }
+
+    // Admin or HOD of the same department
+    function isAdminOrHODOfDepartment(departmentId) {
+      return isAdmin() || (isHOD() && getUserDepartmentId() == departmentId);
+    }
+
+    // Admin or HOD of the same department by name
+    function isAdminOrHODOfDepartmentName(department) {
+      return isAdmin() || (isHOD() && getUserDepartment() == department);
+    }
+
+    // Check if teacher is assigned to a course
+    function isTeacherOfCourse(courseId) {
+      if (!isTeacher()) return false;
+      // Check if teacher's UID is in the course's teacherIds array
+      return exists(/databases/$(database)/documents/courses/$(courseId)) &&
+             request.auth.uid in get(/databases/$(database)/documents/courses/$(courseId)).data.teacherIds;
+    }
+
+    // Check if student owns the record
+    function isOwnRecord(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Check if student is enrolled in a course
+    function isStudentEnrolledInCourse(courseId) {
+      if (!isStudent()) return false;
+      // This would check an enrollments collection or student's enrolledCourseIds
+      // For now, we allow if student is in the same department as the course
+      return isSameDepartmentName(get(/databases/$(database)/documents/courses/$(courseId)).data.department);
+    }
+
+    // ============================================================
+    // USERS COLLECTION
+    // ============================================================
+    match /users/{userId} {
+      // Users can read their own profile
+      allow read: if isSignedIn() && (isAdmin() || isOwnRecord(userId));
+
+      // Users can update their own profile (but not role, status, department)
+      allow update: if isSignedIn() && isOwnRecord(userId) &&
+        !request.resource.data.keys().hasAny(['role', 'status', 'department', 'departmentId', 'uid', 'createdAt']);
+
+      // Admin can create, read, update, delete any user
+      allow create, delete: if isAdmin();
+
+      // Admin can update any field including role/status
+      allow update: if isAdmin();
+    }
+
+    // ============================================================
+    // DEPARTMENTS COLLECTION
+    // ============================================================
+    match /departments/{departmentId} {
+      // Admin full access
+      allow read, write: if isAdmin();
+
+      // HOD can read their own department
+      allow read: if isHOD() && getUserDepartmentId() == departmentId;
+
+      // HOD can update their own department (limited fields)
+      allow update: if isHOD() && getUserDepartmentId() == departmentId &&
+        !request.resource.data.keys().hasAny(['hodId', 'createdAt']);
+    }
+
+    // ============================================================
+    // STUDENTS COLLECTION (Academic Profiles)
+    // ============================================================
+    match /students/{studentId} {
+      // Admin full access
+      allow read, write: if isAdmin();
+
+      // HOD can read/write students in their department
+      allow read, write: if isHOD() && resource.data.departmentId == getUserDepartmentId();
+
+      // Teacher can read students in their department
+      allow read: if isTeacher() && resource.data.departmentId == getUserDepartmentId();
+
+      // Student can read their own profile
+      allow read: if isStudent() && isOwnRecord(studentId);
+    }
+
+    // ============================================================
+    // TEACHERS COLLECTION (Academic Profiles)
+    // ============================================================
+    match /teachers/{teacherId} {
+      // Admin full access
+      allow read, write: if isAdmin();
+
+      // HOD can read/write teachers in their department
+      allow read, write: if isHOD() && resource.data.departmentId == getUserDepartmentId();
+
+      // Teacher can read their own profile
+      allow read: if isTeacher() && isOwnRecord(teacherId);
+
+      // Teacher can update their own profile (limited fields)
+      allow update: if isTeacher() && isOwnRecord(teacherId) &&
+        !request.resource.data.keys().hasAny(['department', 'departmentId', 'employeeId', 'designation', 'status', 'createdAt']);
+    }
+
+    // ============================================================
+    // HODS COLLECTION (Academic Profiles)
+    // ============================================================
+    match /hods/{hodId} {
+      // Admin full access
+      allow read, write: if isAdmin();
+
+      // HOD can read their own profile
+      allow read: if isHOD() && isOwnRecord(hodId);
+    }
+
+    // ============================================================
+    // COURSES COLLECTION
+    // ============================================================
+    match /courses/{courseId} {
+      // Admin full access
+      allow read, write: if isAdmin();
+
+      // HOD can read/write courses in their department
+      allow read, write: if isHOD() && resource.data.departmentId == getUserDepartmentId();
+
+      // Teacher can read courses they are assigned to
+      allow read: if isTeacher() && request.auth.uid in resource.data.teacherIds;
+
+      // Student can read courses in their department (for enrollment view)
+      allow read: if isStudent() && resource.data.departmentId == getUserDepartmentId();
+    }
+
+    // ============================================================
+    // ATTENDANCE COLLECTION
+    // ============================================================
+    match /attendance/{attendanceId} {
+      // Admin full access
+      allow read, write: if isAdmin();
+
+      // HOD can read/write attendance in their department
+      allow read, write: if isHOD() && resource.data.departmentId == getUserDepartmentId();
+
+      // Teacher can read/write attendance for courses they teach
+      allow read: if isTeacher() && isTeacherOfCourse(resource.data.courseId);
+      allow write: if isTeacher() && isTeacherOfCourse(request.resource.data.courseId) &&
+        request.auth.uid == request.resource.data.teacherId;
+
+      // Student can read their own attendance
+      allow read: if isStudent() && isOwnRecord(resource.data.studentId);
+    }
+
+    // ============================================================
+    // MARKS COLLECTION
+    // ============================================================
+    match /marks/{markId} {
+      // Admin full access
+      allow read, write: if isAdmin();
+
+      // HOD can read/write marks in their department
+      allow read, write: if isHOD() && resource.data.departmentId == getUserDepartmentId();
+
+      // Teacher can read/write marks for courses they teach
+      allow read: if isTeacher() && isTeacherOfCourse(resource.data.courseId);
+      allow write: if isTeacher() && isTeacherOfCourse(request.resource.data.courseId) &&
+        request.auth.uid == request.resource.data.teacherId &&
+        request.resource.data.marks >= 0 &&
+        request.resource.data.marks <= request.resource.data.maxMarks &&
+        request.resource.data.maxMarks > 0;
+
+      // Student can read their own marks
+      allow read: if isStudent() && isOwnRecord(resource.data.studentId);
+    }
+
+    // ============================================================
+    // EXAMINATIONS COLLECTION
+    // ============================================================
+    match /examinations/{examId} {
+      // Admin full access
+      allow read, write: if isAdmin();
+
+      // HOD can read/write examinations in their department
+      allow read, write: if isHOD() && resource.data.departmentId == getUserDepartmentId();
+
+      // Teacher can read examinations for courses they teach
+      allow read: if isTeacher() && isTeacherOfCourse(resource.data.courseId);
+
+      // Student can read examinations for courses in their department
+      allow read: if isStudent() && resource.data.departmentId == getUserDepartmentId();
+    }
+
+    // ============================================================
+    // NOTIFICATIONS COLLECTION
+    // ============================================================
+    match /notifications/{notificationId} {
+      // Admin full access
+      allow read, write: if isAdmin();
+
+      // HOD can create notifications for their department
+      allow create: if isHOD() &&
+        request.resource.data.targetType == 'department' &&
+        request.resource.data.targetId == getUserDepartmentId() &&
+        request.resource.data.createdBy == request.auth.uid;
+
+      // HOD can read department notifications
+      allow read: if isHOD() &&
+        (resource.data.targetType == 'all' ||
+         (resource.data.targetType == 'department' && resource.data.targetId == getUserDepartmentId()) ||
+         (resource.data.targetType == 'role' && resource.data.targetId == 'hod') ||
+         (resource.data.targetType == 'user' && resource.data.targetId == request.auth.uid));
+
+      // Teacher can read relevant notifications
+      allow read: if isTeacher() &&
+        (resource.data.targetType == 'all' ||
+         (resource.data.targetType == 'department' && resource.data.targetId == getUserDepartmentId()) ||
+         (resource.data.targetType == 'role' && resource.data.targetId == 'teacher') ||
+         (resource.data.targetType == 'user' && resource.data.targetId == request.auth.uid));
+
+      // Student can read relevant notifications
+      allow read: if isStudent() &&
+        (resource.data.targetType == 'all' ||
+         (resource.data.targetType == 'department' && resource.data.targetId == getUserDepartmentId()) ||
+         (resource.data.targetType == 'role' && resource.data.targetId == 'student') ||
+         (resource.data.targetType == 'user' && resource.data.targetId == request.auth.uid));
+
+      // Users can mark notifications as read (update readBy array)
+      allow update: if isSignedIn() &&
+        request.resource.data.readBy.hasAny([request.auth.uid]) &&
+        request.resource.data.readBy.size() >= resource.data.readBy.size();
+    }
+
+    // ============================================================
+    // INVITATIONS COLLECTION
+    // ============================================================
+    match /invitations/{invitationId} {
+      // Admin full access
+      allow read, write: if isAdmin();
+
+      // No other roles can access invitations
+      allow read, write: if false;
+    }
+
+    // ============================================================
+    // DENY BY DEFAULT
+    // ============================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
