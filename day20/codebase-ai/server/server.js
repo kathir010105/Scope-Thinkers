@@ -4,6 +4,7 @@ import cors from "cors";
 import weaviateRouter from "./routes/weaviate.js";
 import ingestRouter from "./routes/ingest.js";
 import searchRouter from "./routes/search.js";
+import documentsRouter from "./routes/documents.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
@@ -17,6 +18,7 @@ app.use(
 app.use("/api/ingest", ingestRouter);
 app.use(express.json({ limit: "1mb" }));
 app.use("/api/search", searchRouter);
+app.use("/api/documents", documentsRouter);
 
 app.get("/", (req, res) => {
   res.json({
