@@ -134,6 +134,7 @@ function validatePublicUrl(rawUrl) {
   return parsed;
 }
 
+
 async function getClient() {
   if (!process.env.WEAVIATE_URL || !process.env.WEAVIATE_API_KEY) {
     throw new Error("Weaviate credentials are not configured.");
@@ -141,8 +142,14 @@ async function getClient() {
 
   return weaviate.connectToWeaviateCloud(process.env.WEAVIATE_URL, {
     authCredentials: new weaviate.ApiKey(process.env.WEAVIATE_API_KEY),
+    timeout: {
+      init: 30,
+      query: 60,
+      insert: 120,
+    },
   });
 }
+
 
 
 async function ensureCollection(client) {
@@ -443,15 +450,18 @@ router.post("/url", async (req, res) => {
     client = await getClient();
     const collection = await ensureCollection(client);
 
-    const result = await ingestDocument({
-      collection,
-      title,
-      url: finalUrl.href,
-      category: getCategory("url", finalUrl.hostname),
-      sourceType: "url",
-      sourceId: `url:${hashText(canonicalUrl)}`,
-      text,
-    });
+    
+const result = await ingestDocument({
+  collection, // FIX: pass the Weaviate collection
+  title: originalName,
+  url: `upload://${encodeURIComponent(originalName)}`,
+  category: extension.slice(1),
+  sourceType: "file",
+  // Identical file content is deduplicated even if the filename changes.
+  sourceId: `file:${fileHash}`,
+  text: cleanedText,
+});
+
 
     return res.status(200).json({
       success: true,
@@ -549,15 +559,17 @@ router.post(
       client = await getClient();
       const collection = await ensureCollection(client);
 
-      const result = await ingestDocument({
-        title: originalName,
-        url: `upload://${encodeURIComponent(originalName)}`,
-        category: extension.slice(1),
-        sourceType: "file",
-        // Identical file content is deduplicated even if the filename changes.
-        sourceId: `file:${fileHash}`,
-        text: cleanedText,
-      });
+      
+const result = await ingestDocument({
+  collection,
+  title: originalName,
+  url: `upload://${encodeURIComponent(originalName)}`,
+  category: extension.slice(1),
+  sourceType: "file",
+  sourceId: `file:${fileHash}`,
+  text: cleanedText,
+});
+
 
       return res.status(200).json({
         success: true,
