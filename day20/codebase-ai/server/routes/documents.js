@@ -12,6 +12,86 @@ const MAX_URL_TEXT_SIZE = 5 * 1024 * 1024;
 const CHUNK_SIZE = 1200;
 const CHUNK_OVERLAP = 150;
 
+
+
+const TECHNOLOGY_RULES = [
+  {
+    name: "TypeScript",
+    domains: ["typescriptlang.org"],
+    pattern: /\btypescript\b/i,
+  },
+  {
+    name: "Express.js",
+    domains: ["expressjs.com"],
+    pattern: /\bexpress(?:\.js)?\b/i,
+  },
+  {
+    name: "React",
+    domains: ["react.dev", "reactjs.org"],
+    pattern: /\breact(?:\.js)?\b/i,
+  },
+  {
+    name: "Node.js",
+    domains: ["nodejs.org"],
+    pattern: /\bnode\.?js\b/i,
+  },
+  {
+    name: "Vite",
+    domains: ["vite.dev", "vitejs.dev"],
+    pattern: /\bvite\b/i,
+  },
+  {
+    name: "Weaviate",
+    domains: ["weaviate.io"],
+    pattern: /\bweaviate\b/i,
+  },
+  {
+    name: "Gemini API",
+    domains: ["ai.google.dev"],
+    pattern: /\bgemini(?:\s+api)?\b/i,
+  },
+  {
+    name: "JavaScript",
+    domains: ["developer.mozilla.org"],
+    pattern: /\bjavascript\b/i,
+  },
+];
+
+function inferTechnology({ title = "", url = "", text = "" }) {
+  let hostname = "";
+
+  try {
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      hostname = new URL(url).hostname.toLowerCase();
+    }
+  } catch {
+    // Continue with title and content matching.
+  }
+
+  // Domain and title are stronger evidence than content alone.
+  const byDomain = TECHNOLOGY_RULES.find((rule) =>
+    rule.domains.some(
+      (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
+    ),
+  );
+
+  if (byDomain) return byDomain.name;
+
+  const byTitle = TECHNOLOGY_RULES.filter((rule) => rule.pattern.test(title));
+
+  if (byTitle.length === 1) return byTitle[0].name;
+
+  if (byTitle.length > 1) return null;
+
+  // Only classify from content when exactly one known technology matches.
+  const byContent = TECHNOLOGY_RULES.filter((rule) =>
+    rule.pattern.test(text.slice(0, 12000)),
+  );
+
+  return byContent.length === 1 ? byContent[0].name : null;
+}
+
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -166,6 +246,7 @@ async function ensureCollection(client) {
         { name: "content", dataType: dataType.TEXT },
         { name: "chunkIndex", dataType: dataType.INT },
         { name: "sourceId", dataType: dataType.TEXT },
+        { name: "technology", dataType: dataType.TEXT },
         { name: "contentHash", dataType: dataType.TEXT },
         { name: "sourceType", dataType: dataType.TEXT },
       ],
@@ -184,6 +265,7 @@ async function ensureCollection(client) {
     { name: "sourceId", dataType: dataType.TEXT },
     { name: "contentHash", dataType: dataType.TEXT },
     { name: "sourceType", dataType: dataType.TEXT },
+    { name: "technology", dataType: dataType.TEXT },
   ];
 
   for (const property of newProperties) {
@@ -229,8 +311,16 @@ async function ingestDocument({
   sourceType,
   sourceId,
   text,
+  technology: suppliedTechnology,
 }) {
   const cleaned = cleanText(text);
+  const technology =
+    suppliedTechnology ||
+    inferTechnology({
+      title,
+      url,
+      text: cleaned,
+    });
 
   if (cleaned.length < 30) {
     throw new Error("Not enough readable text was found in this document.");
@@ -264,6 +354,7 @@ async function ingestDocument({
       title,
       url,
       category,
+      technology: technology || "",
       content,
       chunkIndex,
       sourceId,
@@ -293,6 +384,86 @@ function getCategory(sourceType, title) {
 
   return sourceType;
 }
+
+/*
+ * POST /api/documents/migrate-technologies
+ *
+ * Backfills technology metadata for existing indexed chunks.
+ */
+router.post("/migrate-technologies", async (req, res) => {
+  let client;
+
+  try {
+    client = await getClient();
+    const collection = await ensureCollection(client);
+
+    const result = await collection.query.fetchObjects({
+      limit: 1000,
+      returnProperties: [
+        "title",
+        "url",
+        "content",
+        "technology",
+      ],
+    });
+
+    let updated = 0;
+    let skipped = 0;
+
+    for (const object of result.objects || []) {
+      const properties = object.properties || {};
+
+      // Do not overwrite metadata that is already present.
+      if (
+        typeof properties.technology === "string" &&
+        properties.technology.trim()
+      ) {
+        skipped++;
+        continue;
+      }
+
+      const technology = inferTechnology({
+        title: properties.title || "",
+        url: properties.url || "",
+        text: properties.content || "",
+      });
+
+      if (!technology) {
+        skipped++;
+        continue;
+      }
+
+      await collection.data.update({
+        id: object.uuid,
+        properties: { technology },
+      });
+
+      updated++;
+    }
+
+    return res.json({
+      success: true,
+      scanned: result.objects?.length || 0,
+      updated,
+      skipped,
+      message:
+        "Technology metadata migration completed for the retrieved documents.",
+    });
+  } catch (error) {
+    console.error("Technology migration failed:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Technology migration failed.",
+    });
+  } finally {
+    if (client) {
+      try {
+        await client.close();
+      } catch {}
+    }
+  }
+});
 
 // GET /api/documents
 // List indexed documents grouped by their source.
@@ -451,16 +622,17 @@ router.post("/url", async (req, res) => {
     const collection = await ensureCollection(client);
 
     
+
 const result = await ingestDocument({
-  collection, // FIX: pass the Weaviate collection
-  title: originalName,
-  url: `upload://${encodeURIComponent(originalName)}`,
-  category: extension.slice(1),
-  sourceType: "file",
-  // Identical file content is deduplicated even if the filename changes.
-  sourceId: `file:${fileHash}`,
-  text: cleanedText,
+  collection,
+  title,
+  url: finalUrl.href,
+  category: getCategory("url", finalUrl.href),
+  sourceType: "url",
+  sourceId: `url:${hashText(finalUrl.href)}`,
+  text,
 });
+
 
 
     return res.status(200).json({

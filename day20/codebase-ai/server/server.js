@@ -5,6 +5,8 @@ import weaviateRouter from "./routes/weaviate.js";
 import ingestRouter from "./routes/ingest.js";
 import searchRouter from "./routes/search.js";
 import documentsRouter from "./routes/documents.js";
+import debugRouter from "./routes/debug.js";
+
 
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
@@ -14,11 +16,14 @@ app.use(
     origin: process.env.CLIENT_URL || "http://localhost:5173",
   }),
 );
+app.use(express.json({ limit: "1mb" }));
 
 app.use("/api/ingest", ingestRouter);
-app.use(express.json({ limit: "1mb" }));
 app.use("/api/search", searchRouter);
 app.use("/api/documents", documentsRouter);
+app.use("/api/debug", debugRouter);
+app.use("/api/weaviate", weaviateRouter);
+
 
 app.get("/", (req, res) => {
   res.json({
@@ -43,7 +48,7 @@ app.get("/api/config/status", (req, res) => {
   });
 });
 
-app.use("/api/weaviate", weaviateRouter);
+
 
 app.use((req, res) => {
   res.status(404).json({
