@@ -3,6 +3,7 @@ import {
   AlertCircle,
   CheckCircle2,
   ExternalLink,
+  Eye,
   File,
   FileText,
   FileUp,
@@ -17,6 +18,19 @@ import {
 const API_URL = (
   import.meta.env.VITE_API_URL || "http://localhost:5000"
 ).replace(/\/$/, "");
+
+function createPdfBlobUrl(pdfFileId) {
+  return fetch(`${API_URL}/api/documents/pdf/${encodeURIComponent(pdfFileId)}`)
+    .then((response) => {
+      if (!response.ok) throw new Error("Failed to fetch PDF");
+      return response.blob();
+    })
+    .then((blob) => URL.createObjectURL(blob))
+    .catch((error) => {
+      console.error("Failed to create PDF blob URL:", error);
+      return null;
+    });
+}
 
 const COLORS = {
   midnight: "#1B1931",
@@ -39,6 +53,37 @@ export default function DocumentManager({ isDark = false, onClose }) {
   const [dragging, setDragging] = useState(false);
   const [deletingId, setDeletingId] = useState("");
   const fileInputRef = useRef(null);
+  const [previewDocument, setPreviewDocument] = useState(null);
+  const [pdfBlobUrl, setPdfBlobUrl] = useState(null);
+
+  // Fetch PDF as blob and create object URL for same-origin iframe embedding
+  useEffect(() => {
+    let currentBlobUrl = null;
+
+    if (previewDocument?.pdfFileId) {
+      createPdfBlobUrl(previewDocument.pdfFileId).then((url) => {
+        if (url) {
+          currentBlobUrl = url;
+          setPdfBlobUrl(url);
+        }
+      });
+    }
+
+    return () => {
+      if (currentBlobUrl) {
+        URL.revokeObjectURL(currentBlobUrl);
+      }
+    };
+  }, [previewDocument]);
+
+  // Cleanup blob URL when component unmounts or preview closes
+  useEffect(() => {
+    return () => {
+      if (pdfBlobUrl) {
+        URL.revokeObjectURL(pdfBlobUrl);
+      }
+    };
+  }, []);
 
   const panel = isDark
     ? "border-white/10 bg-[#292039]"
@@ -85,14 +130,18 @@ export default function DocumentManager({ isDark = false, onClose }) {
     setIngesting(true);
     setMessage({
       type: "progress",
-      text: "Fetching and indexing the documentation URL...",
+      text: "Ingesting documentation and generating chunks...",
     });
 
     try {
       const response = await fetch(`${API_URL}/api/documents/url`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim() }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          url: url.trim(),
+        }),
       });
 
       const data = await response.json();
@@ -101,14 +150,21 @@ export default function DocumentManager({ isDark = false, onClose }) {
         throw new Error(data.message || "URL ingestion failed.");
       }
 
+      // Support both single-page and crawler response formats.
+      const chunkCount = data.totalChunks ?? data.chunks ?? 0;
+
       setMessage({
         type: data.status === "duplicate" ? "info" : "success",
-        text: `${data.message} ${data.chunks} chunks.`,
+        text: `${data.message || "Documentation ingestion completed."} ${chunkCount} chunks.`,
       });
 
       setUrl("");
+
+      // Refresh the indexed documents and chunk statistics.
       await loadDocuments();
     } catch (error) {
+      console.error("URL ingestion failed:", error);
+
       setMessage({
         type: "error",
         text: error.message || "Could not index this URL.",
@@ -620,7 +676,18 @@ export default function DocumentManager({ isDark = false, onClose }) {
                   <CheckCircle2 size={12} />
                   Indexed
                 </span>
-
+                {document.pdfFileId && (
+                  <button
+                    type="button"
+                    onClick={() => setPreviewDocument(document)}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition hover:bg-[#ED9659]/15"
+                    style={{ color: COLORS.amber }}
+                    aria-label={`Preview ${document.title}`}
+                    title="Preview PDF"
+                  >
+                    <Eye size={17} />
+                  </button>
+                )}
                 <button
                   onClick={() => deleteDocument(document)}
                   disabled={deletingId === document.id}
@@ -640,6 +707,85 @@ export default function DocumentManager({ isDark = false, onClose }) {
           </div>
         )}
       </section>
+      {previewDocument && (
+        <div
+          className="fixed inset-0 z-[100] flex justify-end bg-black/50"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setPreviewDocument(null);
+            }
+          }}
+        >
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label={`PDF preview: ${previewDocument.title}`}
+            className={`flex h-full w-full max-w-3xl flex-col border-l shadow-2xl ${
+              isDark
+                ? "border-white/10 bg-[#1B1931]"
+                : "border-[#44174E]/10 bg-[#FFFCFA]"
+            }`}
+          >
+            <header className="flex items-center gap-3 border-b border-current/10 p-4">
+              <div
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
+                style={{
+                  background: isDark ? "#44174E" : "#F0E5EB",
+                  color: COLORS.rose,
+                }}
+              >
+                <FileText size={19} />
+              </div>
+
+              <div className="min-w-0 flex-1">
+                <h3 className="truncate text-sm font-semibold">
+                  {previewDocument.title}
+                </h3>
+                <p className={`mt-1 text-xs ${muted}`}>PDF preview</p>
+              </div>
+
+              <a
+                href={`${API_URL}/api/documents/pdf/${encodeURIComponent(
+                  previewDocument.pdfFileId,
+                )}`}
+                target="_blank"
+                rel="noreferrer"
+                className="flex h-9 w-9 items-center justify-center rounded-lg hover:bg-current/5"
+                title="Open PDF in a new tab"
+                aria-label="Open PDF in a new tab"
+              >
+                <ExternalLink size={17} />
+              </a>
+
+              <button
+                type="button"
+                onClick={() => setPreviewDocument(null)}
+                className="flex h-9 w-9 items-center justify-center rounded-lg hover:bg-current/5"
+                aria-label="Close PDF preview"
+                title="Close preview"
+              >
+                <X size={19} />
+              </button>
+            </header>
+
+            <div className="min-h-0 flex-1 bg-[#525659]">
+              {pdfBlobUrl ? (
+                <iframe
+                  key={previewDocument.pdfFileId}
+                  src={pdfBlobUrl}
+                  title={`PDF preview: ${previewDocument.title}`}
+                  className="h-full w-full border-0"
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center text-center p-4">
+                  <LoaderCircle size={32} className="animate-spin mx-auto" style={{ color: COLORS.amber }} />
+                  <p className={`mt-2 text-sm ${muted}`}>Loading PDF preview...</p>
+                </div>
+              )}
+            </div>
+          </aside>
+        </div>
+      )}
     </div>
   );
 }

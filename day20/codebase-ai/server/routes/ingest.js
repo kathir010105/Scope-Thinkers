@@ -177,7 +177,7 @@ router.post("/express", async (req, res) => {
       await client.collections.create({
         name: COLLECTION_NAME,
         description: "Official Express.js documentation chunks for CodeBase AI",
-        vectorizers: vectors.text2VecWeaviate(),
+        vectorizers: [vectors.text2VecWeaviate()],
         properties: [
           { name: "title", dataType: dataType.TEXT },
           { name: "url", dataType: dataType.TEXT },

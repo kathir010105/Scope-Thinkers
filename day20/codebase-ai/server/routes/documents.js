@@ -3,8 +3,15 @@ import multer from "multer";
 import crypto from "node:crypto";
 import weaviate, { dataType, vectors } from "weaviate-client";
 import { PDFParse } from "pdf-parse";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const router = express.Router();
+const PDF_STORAGE_DIR = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../uploads/pdfs",
+);
 
 const COLLECTION_NAME = "ExpressDocs";
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -249,6 +256,7 @@ async function ensureCollection(client) {
         { name: "technology", dataType: dataType.TEXT },
         { name: "contentHash", dataType: dataType.TEXT },
         { name: "sourceType", dataType: dataType.TEXT },
+        { name: "pdfFileId", dataType: dataType.TEXT },
       ],
     });
   }
@@ -266,6 +274,7 @@ async function ensureCollection(client) {
     { name: "contentHash", dataType: dataType.TEXT },
     { name: "sourceType", dataType: dataType.TEXT },
     { name: "technology", dataType: dataType.TEXT },
+    { name: "pdfFileId", dataType: dataType.TEXT },
   ];
 
   for (const property of newProperties) {
@@ -291,6 +300,7 @@ async function getSourceObjects(collection, sourceId) {
       "sourceId",
       "contentHash",
       "sourceType",
+      "pdfFileId",
     ],
   });
 
@@ -312,6 +322,7 @@ async function ingestDocument({
   sourceId,
   text,
   technology: suppliedTechnology,
+  pdfFileId = "",
 }) {
   const cleaned = cleanText(text);
   const technology =
@@ -339,6 +350,7 @@ async function ingestDocument({
       message: "This document is already indexed and has not changed.",
       title,
       chunks: previous.length,
+      pdfFileId: previous[0]?.properties?.pdfFileId || "",
     };
   }
 
@@ -360,6 +372,7 @@ async function ingestDocument({
       sourceId,
       contentHash,
       sourceType,
+      pdfFileId,
     },
   }));
 
@@ -384,6 +397,244 @@ function getCategory(sourceType, title) {
 
   return sourceType;
 }
+
+
+function normalizeCrawlUrl(rawUrl) {
+  const url = new URL(rawUrl);
+  url.hash = "";
+  url.search = "";
+  return url.href;
+}
+
+function isWithinCrawlScope(candidateUrl, startUrl) {
+  const candidate = new URL(candidateUrl);
+  const start = new URL(startUrl);
+
+  if (candidate.origin !== start.origin) {
+    return false;
+  }
+
+  // A URL ending in .html or another extension is treated as a page.
+  // Otherwise, crawl within the selected path.
+  const hasFileExtension = /\.[a-z0-9]{1,8}$/i.test(start.pathname);
+
+  let basePath;
+
+  if (hasFileExtension) {
+    basePath =
+      start.pathname.slice(0, start.pathname.lastIndexOf("/") + 1) || "/";
+  } else {
+    basePath = start.pathname.endsWith("/")
+      ? start.pathname
+      : `${start.pathname}/`;
+
+    if (start.pathname === "/") {
+      basePath = "/";
+    }
+  }
+
+  return (
+    candidate.pathname === start.pathname ||
+    candidate.pathname.startsWith(basePath)
+  );
+}
+
+function extractPageTitle(html, url) {
+  const match = html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
+
+  if (match) {
+    return stripHtml(match[1]).trim().slice(0, 250) || new URL(url).hostname;
+  }
+
+  const heading = html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i);
+
+  if (heading) {
+    return stripHtml(heading[1]).trim().slice(0, 250) || new URL(url).hostname;
+  }
+
+  return (
+    new URL(url).pathname.split("/").filter(Boolean).pop() ||
+    new URL(url).hostname
+  );
+}
+
+function extractInternalLinks(html, pageUrl, startUrl) {
+  const links = new Set();
+  const anchorPattern =
+    /<a\b[^>]*\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>/gi;
+
+  let match;
+
+  while ((match = anchorPattern.exec(html)) !== null) {
+    const href = match[1] ?? match[2] ?? match[3];
+
+    if (!href) continue;
+
+    try {
+      const absoluteUrl = normalizeCrawlUrl(new URL(href, pageUrl).href);
+
+      if (
+        isWithinCrawlScope(absoluteUrl, startUrl) &&
+        !/\.(pdf|png|jpe?g|gif|svg|webp|zip|css|js|json|xml|woff2?)$/i.test(
+          new URL(absoluteUrl).pathname,
+        )
+      ) {
+        links.add(absoluteUrl);
+      }
+    } catch {
+      // Ignore malformed links.
+    }
+  }
+
+  return [...links];
+}
+
+async function fetchCrawlPage(rawUrl) {
+  let currentUrl = rawUrl;
+
+  // Validate every redirect destination instead of blindly following it.
+  for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
+    validatePublicUrl(currentUrl);
+
+    const response = await fetch(currentUrl, {
+      redirect: "manual",
+      signal: AbortSignal.timeout(20000),
+      headers: {
+        "User-Agent": "CodeBaseAI-DocumentationBot/1.0",
+        Accept: "text/html",
+      },
+    });
+
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get("location");
+
+      if (!location) {
+        throw new Error("The page returned a redirect without a location.");
+      }
+
+      if (redirectCount === 5) {
+        throw new Error("Too many redirects.");
+      }
+
+      currentUrl = new URL(location, currentUrl).href;
+      continue;
+    }
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+
+    if (!contentType.includes("text/html")) {
+      throw new Error("Skipped: the URL does not return HTML.");
+    }
+
+    const html = await response.text();
+
+    if (Buffer.byteLength(html, "utf8") > MAX_URL_TEXT_SIZE) {
+      throw new Error("Skipped: the page exceeds the size limit.");
+    }
+
+    const finalUrl = normalizeCrawlUrl(response.url || currentUrl);
+    validatePublicUrl(finalUrl);
+
+    return {
+      url: finalUrl,
+      html,
+      title: extractPageTitle(html, finalUrl),
+      text: stripHtml(html),
+    };
+  }
+
+  throw new Error("Could not fetch the page.");
+}
+
+async function crawlDocumentation(startUrl, collection, options = {}) {
+  const maxPages = Math.min(25, Math.max(1, Number(options.maxPages) || 25));
+
+  const requestedDepth = Number(options.maxDepth);
+
+const maxDepth = Math.min(
+  3,
+  Math.max(
+    0,
+    Number.isFinite(requestedDepth) ? requestedDepth : 2,
+  ),
+);
+
+  const rootUrl = normalizeCrawlUrl(startUrl);
+  const queue = [{ url: rootUrl, depth: 0 }];
+  const discovered = new Set([rootUrl]);
+  const results = [];
+  const errors = [];
+  let pagesAttempted = 0;
+
+  while (queue.length > 0 && pagesAttempted < maxPages) {
+    const current = queue.shift();
+    pagesAttempted += 1;
+
+    try {
+      const page = await fetchCrawlPage(current.url);
+
+      if (!isWithinCrawlScope(page.url, rootUrl)) {
+        errors.push({
+          url: current.url,
+          message:
+            "Skipped: redirected outside the selected documentation scope.",
+        });
+        continue;
+      }
+
+      const result = await ingestDocument({
+        collection,
+        title: page.title,
+        url: page.url,
+        category: getCategory("url", page.url),
+        sourceType: "url",
+        sourceId: `url:${hashText(page.url)}`,
+        text: page.text,
+      });
+
+      results.push({
+        url: page.url,
+        title: page.title,
+        status: result.status,
+        chunks: result.chunks,
+      });
+
+      if (current.depth < maxDepth) {
+        for (const link of extractInternalLinks(page.html, page.url, rootUrl)) {
+          if (!discovered.has(link) && discovered.size < 500) {
+            discovered.add(link);
+            queue.push({
+              url: link,
+              depth: current.depth + 1,
+            });
+          }
+        }
+      }
+    } catch (error) {
+      errors.push({
+        url: current.url,
+        message: error.message || "Could not process this page.",
+      });
+    }
+  }
+
+  return {
+    startUrl: rootUrl,
+    pagesAttempted,
+    pagesIndexed: results.filter((page) => page.status === "indexed").length,
+    pagesAlreadyIndexed: results.filter((page) => page.status === "duplicate")
+      .length,
+    totalChunks: results.reduce((sum, page) => sum + page.chunks, 0),
+    pages: results,
+    errors,
+    truncated: queue.length > 0,
+  };
+}
+
 
 /*
  * POST /api/documents/migrate-technologies
@@ -484,6 +735,8 @@ router.get("/", async (req, res) => {
         "sourceId",
         "contentHash",
         "sourceType",
+        "pdfFileId"
+        
       ],
     });
 
@@ -506,6 +759,7 @@ router.get("/", async (req, res) => {
           sourceType: properties.sourceType || "legacy",
           chunks: 0,
           contentHash: properties.contentHash || null,
+          pdfFileId: properties.pdfFileId || "",
         });
       }
 
@@ -542,6 +796,7 @@ router.get("/", async (req, res) => {
 });
 
 // POST /api/documents/url
+
 router.post("/url", async (req, res) => {
   let client;
 
@@ -556,91 +811,62 @@ router.post("/url", async (req, res) => {
     }
 
     const parsedUrl = validatePublicUrl(rawUrl);
-    const canonicalUrl = parsedUrl.href;
-
-    const response = await fetch(canonicalUrl, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(20000),
-      headers: {
-        "User-Agent": "CodeBaseAI-DocumentationBot/1.0",
-        Accept: "text/html,text/plain,text/markdown",
-      },
-    });
-
-    if (!response.ok) {
-      return res.status(400).json({
-        success: false,
-        message: `The URL returned HTTP ${response.status}.`,
-      });
-    }
-
-    const finalUrl = new URL(response.url);
-
-    // Check redirects too; do not follow a redirect to a private address.
-    validatePublicUrl(finalUrl.href);
-
-    const contentType = response.headers.get("content-type") || "";
-
-    if (
-      !contentType.includes("text/html") &&
-      !contentType.includes("text/plain") &&
-      !contentType.includes("text/markdown")
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "This URL does not return HTML, plain text, or Markdown. Upload a PDF file separately.",
-      });
-    }
-
-    const declaredLength = Number(response.headers.get("content-length") || 0);
-
-    if (declaredLength > MAX_URL_TEXT_SIZE) {
-      return res.status(413).json({
-        success: false,
-        message: "The web page is too large to ingest.",
-      });
-    }
-
-    const html = await response.text();
-
-    if (Buffer.byteLength(html, "utf8") > MAX_URL_TEXT_SIZE) {
-      return res.status(413).json({
-        success: false,
-        message: "The web page is too large to ingest.",
-      });
-    }
-
-    const text = contentType.includes("text/html") ? stripHtml(html) : html;
-
-    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    const title = titleMatch
-      ? stripHtml(titleMatch[1]).slice(0, 250)
-      : finalUrl.hostname;
+    const startUrl = normalizeCrawlUrl(parsedUrl.href);
 
     client = await getClient();
     const collection = await ensureCollection(client);
 
-    
+    // Crawling is enabled by default. Send { "crawl": false }
+    // if you want to index only the submitted page.
+    const shouldCrawl = req.body?.crawl !== false;
 
-const result = await ingestDocument({
-  collection,
-  title,
-  url: finalUrl.href,
-  category: getCategory("url", finalUrl.href),
-  sourceType: "url",
-  sourceId: `url:${hashText(finalUrl.href)}`,
-  text,
-});
+    if (shouldCrawl) {
+      const result = await crawlDocumentation(startUrl, collection, {
+        maxPages: req.body?.maxPages,
+        maxDepth: req.body?.maxDepth,
+      });
 
+      if (result.pagesAttempted === 0) {
+        return res.status(502).json({
+          success: false,
+          message: "No documentation pages could be indexed.",
+          ...result,
+        });
+      }
 
+      return res.status(200).json({
+        success: true,
+        message: "Documentation crawl completed.",
+        ...result,
+      });
+    }
+
+    // Single-page mode: preserve the original URL-ingestion behavior.
+    const page = await fetchCrawlPage(startUrl);
+
+    const result = await ingestDocument({
+      collection,
+      title: page.title,
+      url: page.url,
+      category: getCategory("url", page.url),
+      sourceType: "url",
+      sourceId: `url:${hashText(page.url)}`,
+      text: page.text,
+    });
 
     return res.status(200).json({
       success: true,
+      message: result.message,
       ...result,
+      url: page.url,
+      pagesAttempted: 1,
+      pagesIndexed: result.status === "indexed" ? 1 : 0,
+      pagesAlreadyIndexed: result.status === "duplicate" ? 1 : 0,
+      totalChunks: result.chunks,
+      errors: [],
     });
   } catch (error) {
-    console.error("URL ingestion failed:", error.message);
+    console.error("URL ingestion/crawl failed:", error);
 
     return res.status(400).json({
       success: false,
@@ -650,14 +876,16 @@ const result = await ingestDocument({
     if (client) {
       try {
         await client.close();
-      } catch {}
+      } catch (error) {
+        console.error("Weaviate cleanup failed:", error.message);
+      }
     }
   }
 });
 
+
 // POST /api/documents/upload
-router.post(
-  "/upload",
+router.post("/upload",
   (req, res, next) => {
     upload.single("file")(req, res, (error) => {
       if (error) {
@@ -701,8 +929,8 @@ router.post(
         }
 
         parser = new PDFParse({ data: req.file.buffer });
-        const result = await parser.getText();
-        text = result.text || "";
+        const pdfResult = await parser.getText();
+        text = pdfResult.text || "";
       } else {
         text = req.file.buffer.toString("utf8");
 
@@ -728,19 +956,33 @@ router.post(
 
       const fileHash = hashText(cleanedText);
 
+      let pdfFileId = "";
+
+      if (extension === ".pdf") {
+        pdfFileId = hashText(req.file.buffer.toString("base64"));
+
+        await fs.mkdir(PDF_STORAGE_DIR, { recursive: true });
+
+        await fs.writeFile(
+          path.join(PDF_STORAGE_DIR, `${pdfFileId}.pdf`),
+          req.file.buffer,
+        );
+      }
+
       client = await getClient();
       const collection = await ensureCollection(client);
 
-      
-const result = await ingestDocument({
-  collection,
-  title: originalName,
-  url: `upload://${encodeURIComponent(originalName)}`,
-  category: extension.slice(1),
-  sourceType: "file",
-  sourceId: `file:${fileHash}`,
-  text: cleanedText,
-});
+
+      const result = await ingestDocument({
+        collection,
+        title: originalName,
+        url: `upload://${encodeURIComponent(originalName)}`,
+        category: extension.slice(1),
+        sourceType: "file",
+        sourceId: `file:${fileHash}`,
+        text: cleanedText,
+        pdfFileId,
+      });
 
 
       return res.status(200).json({
@@ -770,6 +1012,52 @@ const result = await ingestDocument({
   },
 );
 
+// GET /api/documents/pdf/:pdfFileId
+router.get("/pdf/:pdfFileId", async (req, res) => {
+  try {
+    const { pdfFileId } = req.params;
+
+    // Accept only SHA-256 hex identifiers.
+    if (!/^[a-f0-9]{64}$/i.test(pdfFileId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid PDF identifier.",
+      });
+    }
+
+    const pdfPath = path.join(
+      PDF_STORAGE_DIR,
+      `${pdfFileId}.pdf`,
+    );
+
+    await fs.access(pdfPath);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      'inline; filename="document.pdf"',
+    );
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Cache-Control", "private, no-store");
+
+    return res.sendFile(pdfPath);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return res.status(404).json({
+        success: false,
+        message:
+          "The original PDF is not available. Re-upload the PDF to enable preview.",
+      });
+    }
+
+    console.error("PDF preview failed:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Could not open this PDF.",
+    });
+  }
+});
 // DELETE /api/documents/:sourceId
 router.delete("/:sourceId", async (req, res) => {
   let client;

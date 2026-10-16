@@ -5,7 +5,7 @@ import { GoogleGenAI } from "@google/genai";
 const router = express.Router();
 
 const COLLECTION_NAME = "ExpressDocs";
-const GEMINI_MODEL = "gemini-3.5-flash-lite";
+const GEMINI_MODEL = "gemini-2.0-flash";
 
 const ai = process.env.GEMINI_API_KEY
   ? new GoogleGenAI({
