@@ -1,17 +1,10 @@
 import express from "express";
 import weaviate from "weaviate-client";
-import { GoogleGenAI } from "@google/genai";
+import { generateWithFallback } from "../services/llm.js";
 
 const router = express.Router();
 
 const COLLECTION_NAME = "ExpressDocs";
-const GEMINI_MODEL = "gemini-3.5-flash-lite";
-
-const ai = process.env.GEMINI_API_KEY
-  ? new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-    })
-  : null;
 
 router.post("/", async (req, res) => {
   let client;
@@ -37,19 +30,17 @@ router.post("/", async (req, res) => {
       });
     }
 
-    if (!ai) {
-      return res.status(500).json({
-        success: false,
-        message: "GEMINI_API_KEY is missing from the server environment.",
-      });
-    }
-
-    // 1. Connect to Weaviate
+    // 1. Connect to Weaviate.
     client = await weaviate.connectToWeaviateCloud(process.env.WEAVIATE_URL, {
       authCredentials: new weaviate.ApiKey(process.env.WEAVIATE_API_KEY),
+      timeout: {
+        init: 30,
+        query: 60,
+        insert: 120,
+      },
     });
 
-    // 2. Check whether the documentation collection exists
+    // 2. Check whether the documentation collection exists.
     const exists = await client.collections.exists(COLLECTION_NAME);
 
     if (!exists) {
@@ -61,7 +52,7 @@ router.post("/", async (req, res) => {
 
     const collection = client.collections.get(COLLECTION_NAME);
 
-    // 3. Retrieve relevant documentation using hybrid search
+    // 3. Retrieve relevant documentation using hybrid search.
     const searchResult = await collection.query.hybrid(query, {
       limit,
       alpha: 0.5,
@@ -89,7 +80,7 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // 4. Build the context Gemini will use
+    // 4. Build the context for the LLM.
     const context = results
       .map(
         (result, index) => `
@@ -129,19 +120,10 @@ INSTRUCTIONS:
 Write the answer in readable Markdown.
 `;
 
-    // 5. Ask Gemini to generate an answer
-    const geminiResponse = await ai.models.generateContent({
-      model: GEMINI_MODEL,
-      contents: prompt,
-    });
+    // 5. Generate with Gemini; automatically fall back to Groq on failure.
+    const { text: answer } = await generateWithFallback(prompt);
 
-    const answer = geminiResponse.text?.trim();
-
-    if (!answer) {
-      throw new Error("Gemini returned an empty answer.");
-    }
-
-    // 6. Return the answer and its supporting sources
+    // 6. Return the answer and its supporting sources.
     const uniqueSources = new Map();
 
     for (const result of results) {
@@ -161,19 +143,16 @@ Write the answer in readable Markdown.
       sources: Array.from(uniqueSources.values()),
       results,
     });
-  
+  } catch (error) {
+    console.error("RAG search failed:", error);
+    console.error("Message:", error?.message);
+    console.error("Status:", error?.status);
 
-} catch (error) {
-  console.error("RAG search failed:", error);
-  console.error("Message:", error?.message);
-  console.error("Status:", error?.status);
-
-  return res.status(500).json({
-    success: false,
-    message: error?.message || "Unknown search error",
-    status: error?.status || 500,
-  });
-
+    return res.status(500).json({
+      success: false,
+      message: error?.message || "Unknown search error",
+      status: error?.status || 500,
+    });
   } finally {
     if (client) {
       try {

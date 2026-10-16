@@ -16,6 +16,7 @@ import {
   ExternalLink,
   FileCode2,
   FileText,
+  GraduationCap,
   History,
   LoaderCircle,
   Menu,
@@ -34,6 +35,7 @@ import {
 } from "lucide-react";
 
 import DocumentManager from "./DocumentManager.jsx";
+import LearningMode from "./LearningMode.jsx";
 
 const API_URL = (
   import.meta.env.VITE_API_URL || "http://localhost:5000"
@@ -773,6 +775,25 @@ function App() {
                 <Bug size={16} />
                 Error Debugger
               </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveMode("learn");
+                  setSidebarOpen(false);
+                }}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition"
+                style={{
+                  background:
+                    activeMode === "learn"
+                      ? `linear-gradient(110deg, ${PALETTE.purple}, ${PALETTE.rose})`
+                      : "transparent",
+                  color: activeMode === "learn" ? "#FFFFFF" : theme.muted,
+                }}
+              >
+                <GraduationCap size={16} />
+                Learning Mode
+              </button>
             </div>
 
             {/* Hero */}
@@ -823,6 +844,10 @@ function App() {
                   without digging through pages of docs.
                 </p>
               </section>
+            )}
+            {/* Learning Mode */}
+            {activeMode === "learn" && (
+              <LearningMode API_URL={API_URL} theme={theme} isDark={isDark} />
             )}
 
             {/* Search box */}

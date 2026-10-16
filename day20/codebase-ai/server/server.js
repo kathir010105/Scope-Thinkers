@@ -6,6 +6,7 @@ import ingestRouter from "./routes/ingest.js";
 import searchRouter from "./routes/search.js";
 import documentsRouter from "./routes/documents.js";
 import debugRouter from "./routes/debug.js";
+import learnRouter from "./routes/learn.js";
 
 
 const app = express();
@@ -23,6 +24,7 @@ app.use("/api/search", searchRouter);
 app.use("/api/documents", documentsRouter);
 app.use("/api/debug", debugRouter);
 app.use("/api/weaviate", weaviateRouter);
+app.use("/api/learn", learnRouter);
 
 
 app.get("/", (req, res) => {
