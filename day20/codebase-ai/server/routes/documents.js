@@ -1,13 +1,39 @@
 import express from "express";
 import multer from "multer";
 import crypto from "node:crypto";
-import weaviate, { dataType, vectors } from "weaviate-client";
+import weaviate, { dataType, vectors, Filters } from "weaviate-client";
 import { PDFParse } from "pdf-parse";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import pool from "../db.js";
+import { verifyAuthToken } from "../middleware/auth.js";
 
 const router = express.Router();
+
+router.use(verifyAuthToken);
+
+// Ensure user_documents table exists
+async function ensureUserDocumentsTable() {
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS user_documents (
+      id VARCHAR(64) PRIMARY KEY,
+      user_id VARCHAR(128) NOT NULL,
+      original_name VARCHAR(255) NOT NULL,
+      mime_type VARCHAR(100),
+      file_size BIGINT,
+      source_type ENUM('file', 'url') NOT NULL DEFAULT 'file',
+      source_id VARCHAR(255),
+      pdf_file_id VARCHAR(64),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_user_id (user_id)
+    )
+  `);
+}
+
+// Call on startup
+ensureUserDocumentsTable().catch(console.error);
+
 const PDF_STORAGE_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../uploads/pdfs",
@@ -257,6 +283,7 @@ async function ensureCollection(client) {
         { name: "contentHash", dataType: dataType.TEXT },
         { name: "sourceType", dataType: dataType.TEXT },
         { name: "pdfFileId", dataType: dataType.TEXT },
+        { name: "userId", dataType: dataType.TEXT },
       ],
     });
   }
@@ -275,6 +302,7 @@ async function ensureCollection(client) {
     { name: "sourceType", dataType: dataType.TEXT },
     { name: "technology", dataType: dataType.TEXT },
     { name: "pdfFileId", dataType: dataType.TEXT },
+    { name: "userId", dataType: dataType.TEXT },
   ];
 
   for (const property of newProperties) {
@@ -287,9 +315,18 @@ async function ensureCollection(client) {
 }
 
 
-async function getSourceObjects(collection, sourceId) {
+async function getSourceObjects(collection, sourceId, userId) {
+  const sourceFilter = collection.filter.byProperty("sourceId").equal(sourceId);
+
+  let filters = sourceFilter;
+
+  if (userId) {
+    const userFilter = collection.filter.byProperty("userId").equal(userId);
+    filters = Filters.and(sourceFilter, userFilter);
+  }
+
   const result = await collection.query.fetchObjects({
-    filters: collection.filter.byProperty("sourceId").equal(sourceId),
+    filters,
     limit: 1000,
     returnProperties: [
       "title",
@@ -301,6 +338,7 @@ async function getSourceObjects(collection, sourceId) {
       "contentHash",
       "sourceType",
       "pdfFileId",
+      "userId",
     ],
   });
 
@@ -323,6 +361,7 @@ async function ingestDocument({
   text,
   technology: suppliedTechnology,
   pdfFileId = "",
+  userId,
 }) {
   const cleaned = cleanText(text);
   const technology =
@@ -338,7 +377,7 @@ async function ingestDocument({
   }
 
   const contentHash = hashText(cleaned);
-  const previous = await getSourceObjects(collection, sourceId);
+  const previous = await getSourceObjects(collection, sourceId, userId);
 
   // Skip unchanged documents.
   if (
@@ -373,6 +412,7 @@ async function ingestDocument({
       contentHash,
       sourceType,
       pdfFileId,
+      userId,
     },
   }));
 
@@ -569,6 +609,7 @@ const maxDepth = Math.min(
   const results = [];
   const errors = [];
   let pagesAttempted = 0;
+  const userId = options.userId;
 
   while (queue.length > 0 && pagesAttempted < maxPages) {
     const current = queue.shift();
@@ -594,6 +635,7 @@ const maxDepth = Math.min(
         sourceType: "url",
         sourceId: `url:${hashText(page.url)}`,
         text: page.text,
+        userId,
       });
 
       results.push({
@@ -722,10 +764,12 @@ router.get("/", async (req, res) => {
   let client;
 
   try {
+    const userId = req.user.uid;
     client = await getClient();
     const collection = await ensureCollection(client);
 
     const result = await collection.query.fetchObjects({
+      filters: collection.filter.byProperty("userId").equal(userId),
       limit: 1000,
       returnProperties: [
         "title",
@@ -824,6 +868,7 @@ router.post("/url", async (req, res) => {
       const result = await crawlDocumentation(startUrl, collection, {
         maxPages: req.body?.maxPages,
         maxDepth: req.body?.maxDepth,
+        userId: req.user.uid,
       });
 
       if (result.pagesAttempted === 0) {
@@ -832,6 +877,28 @@ router.post("/url", async (req, res) => {
           message: "No documentation pages could be indexed.",
           ...result,
         });
+      }
+
+      // Store each crawled page in MySQL
+      for (const page of result.pages) {
+        if (page.status === "indexed") {
+          const docId = crypto.randomBytes(16).toString("hex");
+          await pool.execute(
+            `INSERT INTO user_documents
+        (id, user_id, original_name, mime_type, file_size, source_type, source_id, pdf_file_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              docId,
+              req.user.uid,
+              page.title,
+              "text/html",
+              0,
+              "url",
+              `url:${hashText(page.url)}`,
+              null,
+            ],
+          );
+        }
       }
 
       return res.status(200).json({
@@ -852,19 +919,37 @@ router.post("/url", async (req, res) => {
       sourceType: "url",
       sourceId: `url:${hashText(page.url)}`,
       text: page.text,
+      userId: req.user.uid,
     });
 
-    return res.status(200).json({
-      success: true,
-      message: result.message,
-      ...result,
-      url: page.url,
-      pagesAttempted: 1,
-      pagesIndexed: result.status === "indexed" ? 1 : 0,
-      pagesAlreadyIndexed: result.status === "duplicate" ? 1 : 0,
-      totalChunks: result.chunks,
-      errors: [],
-    });
+    const docId = crypto.randomBytes(16).toString("hex");
+      await pool.execute(
+        `INSERT INTO user_documents
+      (id, user_id, original_name, mime_type, file_size, source_type, source_id, pdf_file_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          docId,
+          req.user.uid,
+          page.title,
+          "text/html",
+          0,
+          "url",
+          `url:${hashText(page.url)}`,
+          null,
+        ],
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: result.message,
+        ...result,
+        url: page.url,
+        pagesAttempted: 1,
+        pagesIndexed: result.status === "indexed" ? 1 : 0,
+        pagesAlreadyIndexed: result.status === "duplicate" ? 1 : 0,
+        totalChunks: result.chunks,
+        errors: [],
+      });
   } catch (error) {
     console.error("URL ingestion/crawl failed:", error);
 
@@ -961,11 +1046,17 @@ router.post("/upload",
       if (extension === ".pdf") {
         pdfFileId = hashText(req.file.buffer.toString("base64"));
 
-        await fs.mkdir(PDF_STORAGE_DIR, { recursive: true });
-
-        await fs.writeFile(
-          path.join(PDF_STORAGE_DIR, `${pdfFileId}.pdf`),
-          req.file.buffer,
+        await pool.execute(
+          `INSERT IGNORE INTO uploaded_pdfs
+      (id, original_name, mime_type, file_size, file_data)
+     VALUES (?, ?, ?, ?, ?)`,
+          [
+            pdfFileId,
+            originalName,
+            "application/pdf",
+            req.file.buffer.length,
+            req.file.buffer,
+          ],
         );
       }
 
@@ -982,8 +1073,37 @@ router.post("/upload",
         sourceId: `file:${fileHash}`,
         text: cleanedText,
         pdfFileId,
+        userId: req.user.uid,
       });
 
+      // Store document metadata in MySQL for all file types
+      const docId = crypto.randomBytes(16).toString("hex");
+      await pool.execute(
+        `INSERT INTO user_documents
+      (id, user_id, original_name, mime_type, file_size, source_type, source_id, pdf_file_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          docId,
+          req.user.uid,
+          originalName,
+          req.file.mimetype,
+          req.file.buffer.length,
+          "file",
+          `file:${fileHash}`,
+          pdfFileId || null,
+        ],
+      );
+
+      if (
+        extension === ".pdf" &&
+        result.status === "duplicate" &&
+        result.pdfFileId &&
+        result.pdfFileId !== pdfFileId
+      ) {
+        await pool.execute("DELETE FROM uploaded_pdfs WHERE id = ?", [
+          pdfFileId,
+        ]);
+      }
 
       return res.status(200).json({
         success: true,
@@ -1013,11 +1133,11 @@ router.post("/upload",
 );
 
 // GET /api/documents/pdf/:pdfFileId
+
 router.get("/pdf/:pdfFileId", async (req, res) => {
   try {
     const { pdfFileId } = req.params;
 
-    // Accept only SHA-256 hex identifiers.
     if (!/^[a-f0-9]{64}$/i.test(pdfFileId)) {
       return res.status(400).json({
         success: false,
@@ -1025,31 +1145,30 @@ router.get("/pdf/:pdfFileId", async (req, res) => {
       });
     }
 
-    const pdfPath = path.join(
-      PDF_STORAGE_DIR,
-      `${pdfFileId}.pdf`,
+    const [rows] = await pool.execute(
+      `SELECT original_name, file_data
+       FROM uploaded_pdfs
+       WHERE id = ?
+       LIMIT 1`,
+      [pdfFileId],
     );
 
-    await fs.access(pdfPath);
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      'inline; filename="document.pdf"',
-    );
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Cache-Control", "private, no-store");
-
-    return res.sendFile(pdfPath);
-  } catch (error) {
-    if (error.code === "ENOENT") {
+    if (rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message:
-          "The original PDF is not available. Re-upload the PDF to enable preview.",
+        message: "PDF not found in MySQL.",
       });
     }
 
+    const filename = rows[0].original_name.replace(/["\\\r\n]/g, "_");
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Cache-Control", "private, no-store");
+
+    return res.send(rows[0].file_data);
+  } catch (error) {
     console.error("PDF preview failed:", error);
 
     return res.status(500).json({
@@ -1058,11 +1177,13 @@ router.get("/pdf/:pdfFileId", async (req, res) => {
     });
   }
 });
+
 // DELETE /api/documents/:sourceId
 router.delete("/:sourceId", async (req, res) => {
   let client;
 
   try {
+    const userId = req.user.uid;
     const sourceId = req.params.sourceId;
 
     if (
@@ -1080,20 +1201,47 @@ router.delete("/:sourceId", async (req, res) => {
     client = await getClient();
     const collection = await ensureCollection(client);
 
-    const objects = await getSourceObjects(collection, sourceId);
+    const objects = await getSourceObjects(collection, sourceId, userId);
+
+    if (objects.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Document not found or access denied.",
+      });
+    }
 
     // Legacy documents do not have sourceId metadata.
     if (sourceId.startsWith("legacy:")) {
       const url = sourceId.slice("legacy:".length);
 
+      const urlFilter = collection.filter.byProperty("url").equal(url);
+      const userFilter = collection.filter.byProperty("userId").equal(userId);
+      const legacyFilters = Filters.and(urlFilter, userFilter);
+
       const legacyObjects = await collection.query.fetchObjects({
-        filters: collection.filter.byProperty("url").equal(url),
+        filters: legacyFilters,
         limit: 1000,
         returnProperties: ["url"],
       });
 
+      const pdfFileIds = [
+        ...new Set(
+          objects
+            .map((object) => object.properties?.pdfFileId)
+            .filter(
+              (id) => typeof id === "string" && /^[a-f0-9]{64}$/i.test(id),
+            ),
+        ),
+      ];
       await deleteObjects(collection, legacyObjects.objects);
+if (pdfFileIds.length > 0) {
+  const placeholders = pdfFileIds.map(() => "?").join(", ");
 
+  await pool.execute(
+    `DELETE FROM uploaded_pdfs WHERE id IN (${placeholders})`,
+    pdfFileIds,
+  );
+}
       return res.json({
         success: true,
         deletedChunks: legacyObjects.objects.length,
@@ -1119,6 +1267,61 @@ router.delete("/:sourceId", async (req, res) => {
         await client.close();
       } catch {}
     }
+  }
+});
+
+// GET /api/documents/user/:userId
+// Admin only: Get all documents for a specific user from MySQL.
+router.get("/user/:userId", async (req, res) => {
+  try {
+    const targetUserId = req.params.userId;
+
+    if (!targetUserId) {
+      return res.status(400).json({
+        success: false,
+        message: "User ID is required.",
+      });
+    }
+
+    const [rows] = await pool.execute(
+      `SELECT id, user_id, original_name, mime_type, file_size, source_type, source_id, pdf_file_id, created_at
+       FROM user_documents
+       WHERE user_id = ?
+       ORDER BY created_at DESC`,
+      [targetUserId],
+    );
+
+    const items = rows.map((row) => ({
+      id: row.id,
+      title: row.original_name,
+      url: row.source_type === "url" ? row.source_id.replace("url:", "") : row.source_id,
+      category: row.mime_type || "documentation",
+      sourceType: row.source_type,
+      chunks: 1,
+      contentHash: null,
+      pdfFileId: row.pdf_file_id || "",
+      userId: row.user_id,
+      createdAt: row.created_at,
+      fileSize: row.file_size,
+      mimeType: row.mime_type,
+    }));
+
+    return res.json({
+      success: true,
+      totalDocuments: items.length,
+      totalChunks: items.length,
+      documents: items,
+    });
+  } catch (error) {
+    console.error("GET /api/documents/user/:userId failed:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Could not load user documents.",
+      ...(process.env.NODE_ENV !== "production" && {
+        details: error.message,
+      }),
+    });
   }
 });
 

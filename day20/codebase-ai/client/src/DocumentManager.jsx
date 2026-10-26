@@ -19,19 +19,6 @@ const API_URL = (
   import.meta.env.VITE_API_URL || "http://localhost:5000"
 ).replace(/\/$/, "");
 
-function createPdfBlobUrl(pdfFileId) {
-  return fetch(`${API_URL}/api/documents/pdf/${encodeURIComponent(pdfFileId)}`)
-    .then((response) => {
-      if (!response.ok) throw new Error("Failed to fetch PDF");
-      return response.blob();
-    })
-    .then((blob) => URL.createObjectURL(blob))
-    .catch((error) => {
-      console.error("Failed to create PDF blob URL:", error);
-      return null;
-    });
-}
-
 const COLORS = {
   midnight: "#1B1931",
   purple: "#44174E",
@@ -41,7 +28,7 @@ const COLORS = {
   blush: "#EBCBC9",
 };
 
-export default function DocumentManager({ isDark = false, onClose }) {
+export default function DocumentManager({ isDark = false, onClose, currentUser }) {
   const [url, setUrl] = useState("");
   const [documents, setDocuments] = useState([]);
   const [totalChunks, setTotalChunks] = useState(0);
@@ -55,6 +42,7 @@ export default function DocumentManager({ isDark = false, onClose }) {
   const fileInputRef = useRef(null);
   const [previewDocument, setPreviewDocument] = useState(null);
   const [pdfBlobUrl, setPdfBlobUrl] = useState(null);
+  const [previewToken, setPreviewToken] = useState("");
 
   // Fetch PDF as blob and create object URL for same-origin iframe embedding
   useEffect(() => {
@@ -95,11 +83,40 @@ export default function DocumentManager({ isDark = false, onClose }) {
     ? "border-white/10 bg-[#1B1931] text-[#FFF8F5] placeholder:text-white/35"
     : "border-[#44174E]/15 bg-[#FFF8F5] text-[#1B1931] placeholder:text-[#88798A]";
 
+  const getAuthHeaders = async () => {
+    if (!currentUser) return {};
+    const token = await currentUser.getIdToken();
+    return { Authorization: `Bearer ${token}` };
+  };
+
+  const authFetch = async (url, options = {}) => {
+    const headers = await getAuthHeaders();
+    return fetch(url, {
+      ...options,
+      headers: {
+        ...headers,
+        ...(options.headers || {}),
+      },
+    });
+  };
+
+  const createPdfBlobUrl = async (pdfFileId) => {
+    try {
+      const response = await authFetch(`${API_URL}/api/documents/pdf/${encodeURIComponent(pdfFileId)}`);
+      if (!response.ok) throw new Error("Failed to fetch PDF");
+      const blob = await response.blob();
+      return URL.createObjectURL(blob);
+    } catch (error) {
+      console.error("Failed to create PDF blob URL:", error);
+      return null;
+    }
+  };
+
   const loadDocuments = async () => {
     setLoadingList(true);
 
     try {
-      const response = await fetch(`${API_URL}/api/documents`);
+      const response = await authFetch(`${API_URL}/api/documents`);
       const data = await response.json();
 
       if (!response.ok || !data.success) {
@@ -134,7 +151,7 @@ export default function DocumentManager({ isDark = false, onClose }) {
     });
 
     try {
-      const response = await fetch(`${API_URL}/api/documents/url`, {
+      const response = await authFetch(`${API_URL}/api/documents/url`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -187,7 +204,7 @@ export default function DocumentManager({ isDark = false, onClose }) {
       const formData = new FormData();
       formData.append("file", selectedFile);
 
-      const response = await fetch(`${API_URL}/api/documents/upload`, {
+      const response = await authFetch(`${API_URL}/api/documents/upload`, {
         method: "POST",
         body: formData,
       });
@@ -230,7 +247,7 @@ export default function DocumentManager({ isDark = false, onClose }) {
     setDeletingId(document.id);
 
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `${API_URL}/api/documents/${encodeURIComponent(document.id)}`,
         { method: "DELETE" },
       );
@@ -679,7 +696,11 @@ export default function DocumentManager({ isDark = false, onClose }) {
                 {document.pdfFileId && (
                   <button
                     type="button"
-                    onClick={() => setPreviewDocument(document)}
+                    onClick={async () => {
+                      const token = await currentUser.getIdToken();
+                      setPreviewToken(token);
+                      setPreviewDocument(document);
+                    }}
                     className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition hover:bg-[#ED9659]/15"
                     style={{ color: COLORS.amber }}
                     aria-label={`Preview ${document.title}`}
@@ -747,7 +768,7 @@ export default function DocumentManager({ isDark = false, onClose }) {
               <a
                 href={`${API_URL}/api/documents/pdf/${encodeURIComponent(
                   previewDocument.pdfFileId,
-                )}`}
+                )}?token=${encodeURIComponent(previewToken)}`}
                 target="_blank"
                 rel="noreferrer"
                 className="flex h-9 w-9 items-center justify-center rounded-lg hover:bg-current/5"

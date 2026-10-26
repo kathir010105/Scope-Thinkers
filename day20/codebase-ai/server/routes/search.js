@@ -1,8 +1,11 @@
 import express from "express";
 import weaviate from "weaviate-client";
 import { generateWithFallback } from "../services/llm.js";
+import { verifyAuthToken } from "../middleware/auth.js";
 
 const router = express.Router();
+
+router.use(verifyAuthToken);
 
 const COLLECTION_NAME = "ExpressDocs";
 
@@ -52,8 +55,10 @@ router.post("/", async (req, res) => {
 
     const collection = client.collections.get(COLLECTION_NAME);
 
-    // 3. Retrieve relevant documentation using hybrid search.
+    // 3. Retrieve relevant documentation using hybrid search (filtered by userId).
+    const userId = req.user.uid;
     const searchResult = await collection.query.hybrid(query, {
+      filters: Filter.byProperty("userId").equal(userId),
       limit,
       alpha: 0.5,
       queryProperties: ["title", "content", "category"],

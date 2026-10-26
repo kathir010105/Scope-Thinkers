@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "firebase-admin": "^13.2.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.3.6"
+  }
+}

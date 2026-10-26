@@ -4,6 +4,27 @@ import ReactMarkdown from "react-markdown";
 
 import remarkGfm from "remark-gfm";
 
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import {
+  doc,
+  getDoc,
+  setDoc,
+  serverTimestamp,
+  collection,
+  getDocs,
+  query,
+  orderBy,
+  limit,
+  deleteDoc,
+} from "firebase/firestore";
+import { auth, db } from "./firebase";
+import AuthScreen from "./AuthScreen.jsx";
+import {
+  saveSearchHistory,
+  loadSearchHistory,
+  clearSearchHistory,
+} from "./searchHistory.js";
+
 import {
   ArrowRight,
   ArrowUpRight,
@@ -19,6 +40,7 @@ import {
   GraduationCap,
   History,
   LoaderCircle,
+  LogOut,
   Menu,
   Moon,
   Plus,
@@ -27,9 +49,11 @@ import {
   ShieldCheck,
   Sparkles,
   Sun,
+  Trash2,
+  UserCircle,
+  Users,
   X,
   Zap,
-  Trash2,
   Bug,
   Wrench,
 } from "lucide-react";
@@ -54,8 +78,6 @@ const PALETTE = {
 
   blush: "#EBCBC9",
 };
-
-const HISTORY_KEY = "codebase-ai-search-history";
 
 const SUGGESTIONS = [
   {
@@ -92,16 +114,6 @@ const SUGGESTIONS = [
   },
 ];
 
-function readHistory() {
-  try {
-    const value = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
-
-    return Array.isArray(value) ? value : [];
-  } catch {
-    return [];
-  }
-}
-
 function cleanQuestion(value) {
   return value.trim().replace(/\s+/g, " ");
 }
@@ -123,10 +135,20 @@ function App() {
   const [error, setError] = useState("");
   const [darkMode, setDarkMode] = useState(true);
   const [searchCount, setSearchCount] = useState(0);
-  const [history, setHistory] = useState(() => readHistory());
+  const [history, setHistory] = useState([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showDocumentManager, setShowDocumentManager] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [activeMode, setActiveMode] = useState("search");
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [selectedAdminUser, setSelectedAdminUser] = useState(null);
+  const [selectedUserHistory, setSelectedUserHistory] = useState([]);
+  const [selectedUserDocs, setSelectedUserDocs] = useState([]);
+  const [deletingUserId, setDeletingUserId] = useState(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [debugTechnologies, setDebugTechnologies] = useState([]);
   const [technologiesLoading, setTechnologiesLoading] = useState(false);
   const [technologiesError, setTechnologiesError] = useState("");
@@ -136,14 +158,77 @@ function App() {
   const [debugLoading, setDebugLoading] = useState(false);
   const [debugError, setDebugError] = useState("");
   const [debugResult, setDebugResult] = useState(null);
-
+const [currentUser, setCurrentUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  
   useEffect(() => {
-    try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-    } catch {
-      // Search continues to work if browser storage is unavailable.
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+
+      // Check if user is admin (by email)
+      const adminEmail = "admin@gmail.com";
+      setIsAdmin(user?.email === adminEmail);
+
+      if (user) {
+        try {
+          const userRef = doc(db, "users", user.uid);
+          const userSnapshot = await getDoc(userRef);
+
+          if (!userSnapshot.exists()) {
+            await setDoc(
+              userRef,
+              {
+                uid: user.uid,
+                email: user.email || "",
+                displayName: user.displayName || "",
+                role: user.email === adminEmail ? "admin" : "user",
+                createdAt: serverTimestamp(),
+              },
+              { merge: true },
+            );
+          }
+        } catch (error) {
+          console.error("Could not initialize user profile:", error);
+        }
+      }
+
+      setAuthLoading(false);
+    });
+
+    return unsubscribe;
+  }, []);
+
+  // Load search history from Firestore when the user signs in.
+  useEffect(() => {
+    if (!currentUser?.uid) {
+      console.log("[History] No user, clearing history");
+      setHistory([]);
+      return;
     }
-  }, [history]);
+
+    console.log("[History] Loading history for user:", currentUser.uid);
+
+    let cancelled = false;
+
+    async function fetchHistory() {
+      try {
+        const savedHistory = await loadSearchHistory(currentUser.uid);
+        console.log("[History] Loaded:", savedHistory.length, "entries");
+
+        if (!cancelled) {
+          setHistory(savedHistory);
+        }
+      } catch (error) {
+        console.error("[History] Failed to load search history:", error);
+      }
+    }
+
+    fetchHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.uid]);
 
   useEffect(() => {
     function handleEscape(event) {
@@ -158,6 +243,12 @@ function App() {
 
     return () => window.removeEventListener("keydown", handleEscape);
   }, []);
+
+  useEffect(() => {
+    if (activeMode === "debug") {
+      loadDebugTechnologies();
+    }
+  }, [activeMode]);
 
   const isDark = darkMode;
 
@@ -241,28 +332,32 @@ function App() {
 
       setSearchCount((count) => count + 1);
 
-      setHistory((previous) => {
-        const entry = {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      const entry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        query: cleaned,
+        answer: generatedAnswer,
+        sources: resultSources,
+        createdAt: new Date().toISOString(),
+      };
 
-          query: cleaned,
+      // Update the UI immediately.
+      setHistory((previous) => [
+        entry,
+        ...previous.filter(
+          (item) =>
+            cleanQuestion(item.query).toLowerCase() !== cleaned.toLowerCase(),
+        ),
+      ].slice(0, 30));
 
-          answer: generatedAnswer,
-
-          sources: resultSources,
-
-          createdAt: new Date().toISOString(),
-        };
-
-        return [
-          entry,
-
-          ...previous.filter(
-            (item) =>
-              cleanQuestion(item.query).toLowerCase() !== cleaned.toLowerCase(),
-          ),
-        ].slice(0, 30);
-      });
+      // Save the search to the signed-in user's Firestore history.
+      if (currentUser?.uid) {
+        console.log("[History] Saving entry for user:", currentUser.uid);
+        saveSearchHistory(currentUser.uid, entry)
+          .then(() => console.log("[History] Save successful"))
+          .catch((error) => {
+            console.error("[History] Failed to save search history:", error);
+          });
+      }
     } catch (err) {
       setError(
         err.message ||
@@ -395,18 +490,106 @@ function App() {
     setSidebarOpen(false);
   }
 
-  function clearHistory() {
+  async function clearHistory() {
+    console.log("[History] Clearing history for user:", currentUser?.uid);
     setHistory([]);
 
-    try {
-      localStorage.removeItem(HISTORY_KEY);
-    } catch {
-      // Ignore storage errors.
+    if (currentUser?.uid) {
+      await clearSearchHistory(currentUser.uid)
+        .then(() => console.log("[History] Clear successful"))
+        .catch((error) => {
+          console.error("[History] Failed to clear search history:", error);
+        });
     }
   }
 
   function removeHistoryItem(id) {
     setHistory((previous) => previous.filter((item) => item.id !== id));
+  }
+
+  // Admin functions
+  async function loadAdminUsers() {
+    setAdminLoading(true);
+    try {
+      const usersRef = collection(db, "users");
+      const snapshot = await getDocs(usersRef);
+      const users = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+      setAdminUsers(users);
+    } catch (error) {
+      console.error("Failed to load admin users:", error);
+    } finally {
+      setAdminLoading(false);
+    }
+  }
+
+  async function loadSelectedUserData(userId) {
+    try {
+      // Load search history
+      const history = await loadSearchHistory(userId);
+      setSelectedUserHistory(history);
+
+      // Load documents from Weaviate via backend API (admin only)
+      const token = await currentUser.getIdToken();
+      const response = await fetch(`${API_URL}/api/documents/user/${userId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        setSelectedUserDocs(data.documents || []);
+      } else {
+        console.error("Failed to load user documents:", data.message);
+        setSelectedUserDocs([]);
+      }
+    } catch (error) {
+      console.error("Failed to load user data:", error);
+      setSelectedUserDocs([]);
+    }
+  }
+
+  async function handleSelectAdminUser(user) {
+    setSelectedAdminUser(user);
+    setShowAdminPanel(true);
+    await loadSelectedUserData(user.id);
+  }
+
+  async function deleteUser(userId) {
+    if (deleteConfirmText !== "delete user") return;
+
+    try {
+      // Delete user's search history
+      const historyRef = collection(db, "users", userId, "searchHistory");
+      const historySnapshot = await getDocs(historyRef);
+      await Promise.all(historySnapshot.docs.map((doc) => deleteDoc(doc.ref)));
+
+      // Delete user's documents
+      const docsRef = collection(db, "users", userId, "documents");
+      const docsSnapshot = await getDocs(docsRef);
+      await Promise.all(docsSnapshot.docs.map((doc) => deleteDoc(doc.ref)));
+
+      // Delete user profile
+      await deleteDoc(doc(db, "users", userId));
+
+      // Refresh users list
+      await loadAdminUsers();
+      setSelectedAdminUser(null);
+      setShowAdminPanel(false);
+      setDeleteConfirmText("");
+    } catch (error) {
+      console.error("Failed to delete user:", error);
+      alert("Failed to delete user. Check console for details.");
+    }
+  }
+
+  function closeAdminPanel() {
+    setShowAdminPanel(false);
+    setSelectedAdminUser(null);
+    setSelectedUserHistory([]);
+    setSelectedUserDocs([]);
+    setDeleteConfirmText("");
   }
 
   function handleSubmit(event) {
@@ -422,6 +605,23 @@ function App() {
       loadDebugTechnologies();
     }
   }, [activeMode]);
+
+  // Keep these checks AFTER all hooks in App().
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#1B1931] text-[#FFF8F5]">
+        <div className="text-center">
+          <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-[#ED9659] border-t-transparent" />
+          <p className="text-sm text-[#B8B0C7]">Checking your session...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return <AuthScreen />;
+  }
+
   return (
     <div
       className="flex min-h-screen overflow-hidden transition-colors duration-200"
@@ -725,6 +925,93 @@ function App() {
                 <Moon size={16} style={{ color: PALETTE.purple }} />
               )}
             </button>
+
+            {/* Profile avatar dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setProfileOpen((prev) => !prev)}
+                className="flex items-center gap-2 rounded-xl border p-1.5 transition hover:opacity-80"
+                style={{
+                  borderColor: theme.border,
+                  background: theme.surface,
+                }}
+                aria-label="User profile"
+                aria-expanded={profileOpen}
+              >
+                <div
+                  className="flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold"
+                  style={{
+                    background: `linear-gradient(135deg, ${PALETTE.purple}, ${PALETTE.rose})`,
+                    color: "#FFFFFF",
+                  }}
+                >
+                  {currentUser?.displayName?.charAt(0)?.toUpperCase() ||
+                  currentUser?.email?.charAt(0)?.toUpperCase() ||
+                  "U"}
+                </div>
+              </button>
+
+              {profileOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setProfileOpen(false)}
+                    aria-hidden="true"
+                  />
+                  <div
+                    className="absolute right-0 z-50 mt-2 w-56 origin-top-right rounded-xl border shadow-lg animate-in fade-in-0 zoom-in-95"
+                    style={{
+                      borderColor: theme.border,
+                      background: theme.surface,
+                    }}
+                    role="menu"
+                  >
+                    <div className="px-4 py-3 border-b" style={{ borderColor: theme.border }}>
+                      <p className="text-sm font-semibold truncate" style={{ color: theme.text }}>
+                        {currentUser?.displayName || "User"}
+                      </p>
+                      <p className="mt-0.5 text-xs truncate" style={{ color: theme.muted }}>
+                        {currentUser?.email}
+                      </p>
+                    </div>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProfileOpen(false);
+                          loadAdminUsers();
+                          setShowAdminPanel(true);
+                        }}
+                        className="flex w-full items-center gap-2 px-4 py-2.5 text-sm font-medium transition hover:bg-slate-100 dark:hover:bg-slate-800"
+                        style={{ color: PALETTE.amber }}
+                        role="menuitem"
+                      >
+                        <ShieldCheck size={16} />
+                        Admin Panel
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setProfileOpen(false);
+                        try {
+                          await signOut(auth);
+                        } catch (error) {
+                          console.error("Sign out failed:", error);
+                        }
+                      }}
+                      className="flex w-full items-center gap-2 px-4 py-2.5 text-sm font-medium transition hover:bg-slate-100 dark:hover:bg-slate-800"
+                      style={{ color: PALETTE.rose }}
+                      role="menuitem"
+                    >
+                      <LogOut size={16} />
+                      Sign out
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </header>
 
@@ -1972,8 +2259,280 @@ function App() {
             >
               <DocumentManager
                 isDark={isDark}
+                currentUser={currentUser}
                 onClose={() => setShowDocumentManager(false)}
               />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Panel Modal */}
+      {showAdminPanel && (
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto bg-[#1B1931]/75 p-3 backdrop-blur-sm sm:p-6"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              closeAdminPanel();
+            }
+          }}
+        >
+          <div className="mx-auto my-3 max-w-5xl sm:my-8">
+            <div
+              className="rounded-3xl border p-4 shadow-2xl sm:p-8"
+              style={{
+                background: theme.page,
+                color: theme.text,
+                borderColor: theme.border,
+              }}
+            >
+              {!selectedAdminUser ? (
+                // Users List View
+                <div>
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-2xl font-bold" style={{ color: theme.text }}>
+                      Admin Panel
+                    </h2>
+                    <span className="text-sm" style={{ color: theme.muted }}>
+                      {adminUsers.length} users
+                    </span>
+                  </div>
+
+                  {adminLoading ? (
+                    <div className="flex items-center justify-center py-12">
+                      <LoaderCircle size={24} className="animate-spin" style={{ color: PALETTE.rose }} />
+                    </div>
+                  ) : (
+                    <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+                      {adminUsers.map((user) => (
+                        <button
+                          key={user.id}
+                          type="button"
+                          onClick={() => handleSelectAdminUser(user)}
+                          className="flex w-full items-center justify-between gap-4 p-4 rounded-xl border transition hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                          style={{
+                            borderColor: theme.border,
+                            background: theme.surface,
+                          }}
+                        >
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            <div
+                              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-semibold"
+                              style={{
+                                background: `linear-gradient(135deg, ${PALETTE.purple}, ${PALETTE.rose})`,
+                                color: "#FFFFFF",
+                              }}
+                            >
+                              {user.displayName?.charAt(0)?.toUpperCase() ||
+                              user.email?.charAt(0)?.toUpperCase() ||
+                              "U"}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="font-medium truncate" style={{ color: theme.text }}>
+                                {user.displayName || "Unnamed User"}
+                              </p>
+                              <p className="text-xs truncate" style={{ color: theme.muted }}>
+                                {user.email}
+                              </p>
+                              <p className="text-xs mt-1" style={{ color: theme.muted }}>
+                                Role: {user.role || "user"} • Joined: {user.createdAt?.toDate?.()?.toLocaleDateString() || "Unknown"}
+                              </p>
+                            </div>
+                          </div>
+                          <Users size={18} style={{ color: theme.muted }} />
+                        </button>
+                      ))}
+                      {adminUsers.length === 0 && (
+                        <p className="text-center py-8" style={{ color: theme.muted }}>
+                          No users found
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                // Selected User Detail View
+                <div>
+                  <div className="flex items-center justify-between mb-6">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedAdminUser(null);
+                        setSelectedUserHistory([]);
+                        setSelectedUserDocs([]);
+                      }}
+                      className="flex items-center gap-2 p-2 rounded-xl transition hover:bg-slate-100 dark:hover:bg-slate-800"
+                      style={{ color: theme.muted }}
+                    >
+                      <ArrowRight size={18} style={{ transform: "rotate(180deg)" }} />
+                      <span className="text-sm font-medium">Back to users</span>
+                    </button>
+                    <div className="flex items-center gap-2">
+                      <div
+                        className="flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold"
+                        style={{
+                          background: `linear-gradient(135deg, ${PALETTE.purple}, ${PALETTE.rose})`,
+                          color: "#FFFFFF",
+                        }}
+                      >
+                        {selectedAdminUser.displayName?.charAt(0)?.toUpperCase() ||
+                        selectedAdminUser.email?.charAt(0)?.toUpperCase() ||
+                        "U"}
+                      </div>
+                      <div className="text-left">
+                        <p className="font-medium" style={{ color: theme.text }}>
+                          {selectedAdminUser.displayName || "Unnamed User"}
+                        </p>
+                        <p className="text-xs" style={{ color: theme.muted }}>
+                          {selectedAdminUser.email}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-6 lg:grid-cols-2">
+                    {/* Search History */}
+                    <div className="space-y-4">
+                      <h3 className="text-lg font-semibold flex items-center gap-2" style={{ color: theme.text }}>
+                        <History size={20} />
+                        Search History ({selectedUserHistory.length})
+                      </h3>
+                      {selectedUserHistory.length === 0 ? (
+                        <p className="text-center py-8 text-sm" style={{ color: theme.muted }}>
+                          No search history
+                        </p>
+                      ) : (
+                        <div className="space-y-2 max-h-[50vh] overflow-y-auto">
+                          {selectedUserHistory.map((item) => (
+                            <div
+                              key={item.id}
+                              className="p-3 rounded-xl border"
+                              style={{
+                                borderColor: theme.border,
+                                background: theme.surface,
+                              }}
+                            >
+                              <p className="font-medium text-sm mb-1" style={{ color: theme.text }}>
+                                {item.query}
+                              </p>
+                              <p className="text-xs line-clamp-2" style={{ color: theme.muted }}>
+                                {item.answer?.slice(0, 200) || "No answer"}
+                              </p>
+                              <div className="flex items-center justify-between mt-2">
+                                <span className="text-xs" style={{ color: theme.muted }}>
+                                  {item.sources?.length || 0} sources
+                                </span>
+                                <span className="text-xs" style={{ color: theme.muted }}>
+                                  {item.createdAt ? new Date(item.createdAt).toLocaleString() : "Unknown date"}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Documents */}
+                    <div className="space-y-4">
+                      <h3 className="text-lg font-semibold flex items-center gap-2" style={{ color: theme.text }}>
+                        <FileText size={20} />
+                        Uploaded Documents ({selectedUserDocs.length})
+                      </h3>
+                      {selectedUserDocs.length === 0 ? (
+                        <p className="text-center py-8 text-sm" style={{ color: theme.muted }}>
+                          No documents uploaded
+                        </p>
+                      ) : (
+                        <div className="space-y-2 max-h-[50vh] overflow-y-auto">
+                          {selectedUserDocs.map((doc) => (
+                            <div
+                              key={doc.id}
+                              className="p-3 rounded-xl border"
+                              style={{
+                                borderColor: theme.border,
+                                background: theme.surface,
+                              }}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-medium text-sm truncate" style={{ color: theme.text }}>
+                                    {doc.fileName || doc.name || "Unnamed Document"}
+                                  </p>
+                                  <p className="text-xs text-blue-500 truncate mt-1">
+                                    {doc.url || doc.downloadURL || doc.link || "No link available"}
+                                  </p>
+                                  <p className="text-xs mt-1" style={{ color: theme.muted }}>
+                                    Type: {doc.type || doc.mimeType || "Unknown"} • Size: {doc.size ? `${(doc.size / 1024).toFixed(1)} KB` : "Unknown"}
+                                  </p>
+                                  <p className="text-xs mt-1" style={{ color: theme.muted }}>
+                                    Uploaded: {doc.createdAt?.toDate?.()?.toLocaleString() || doc.uploadedAt?.toDate?.()?.toLocaleString() || "Unknown date"}
+                                  </p>
+                                </div>
+                                {doc.url && (
+                                  <a
+                                    href={doc.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-1 text-xs font-medium px-3 py-1.5 rounded-lg"
+                                    style={{
+                                      background: `linear-gradient(135deg, ${PALETTE.purple}, ${PALETTE.rose})`,
+                                      color: "#FFFFFF",
+                                    }}
+                                  >
+                                    <ExternalLink size={12} />
+                                    Open
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Delete User Section */}
+                  <div className="mt-6 p-4 rounded-xl border" style={{ borderColor: "rgba(163,64,84,0.3)", background: "rgba(163,64,84,0.05)" }}>
+                    <h3 className="text-lg font-semibold mb-3 flex items-center gap-2" style={{ color: PALETTE.rose }}>
+                      <Trash2 size={20} />
+                      Danger Zone
+                    </h3>
+                    <p className="text-sm mb-4" style={{ color: theme.muted }}>
+                      Deleting this user will permanently remove their account, all search history, and all uploaded documents. This action cannot be undone.
+                    </p>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                      <input
+                        type="text"
+                        value={deleteConfirmText}
+                        onChange={(e) => setDeleteConfirmText(e.target.value)}
+                        placeholder='Type "delete user" to confirm'
+                        className="flex-1 rounded-xl border px-4 py-2 text-sm outline-none"
+                        style={{
+                          borderColor: theme.border,
+                          background: theme.input,
+                          color: theme.text,
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => deleteUser(selectedAdminUser.id)}
+                        disabled={deleteConfirmText !== "delete user"}
+                        className="flex shrink-0 items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
+                        style={{
+                          background: deleteConfirmText === "delete user"
+                            ? `linear-gradient(110deg, ${PALETTE.rose}, ${PALETTE.burgundy})`
+                            : "transparent",
+                          color: deleteConfirmText === "delete user" ? "#FFFFFF" : PALETTE.rose,
+                          borderColor: deleteConfirmText === "delete user" ? "transparent" : PALETTE.rose,
+                        }}
+                      >
+                        <Trash2 size={16} />
+                        Delete User
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
