@@ -1,4 +1,4 @@
-# Learn-JS Internship Learning Journal
+# Scope Thinkers Pvt. Ltd. Internship Learning Journal
 
 ## Overview
 
